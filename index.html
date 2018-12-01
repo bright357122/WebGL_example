@@ -1,0 +1,3313 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>WebGL</title>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+
+  <style>
+  body {
+    margin: 0;
+  }
+  canvas {
+    width: 100vw;
+    height: 80vh;
+    display: block;
+    border: none;
+  }
+  .container {
+    display: block;
+    position: relative;
+    padding-left: 35px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    font-size: 22px;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+  }
+
+  /* Hide the browser's default checkbox */
+  .container input {
+    position: absolute;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  /* Create a custom checkbox */
+  .checkmark {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 25px;
+    width: 25px;
+    background-color: #eee;
+  }
+
+  /* On mouse-over, add a grey background color */
+  .container:hover input ~ .checkmark {
+    background-color: #ccc;
+  }
+
+  /* When the checkbox is checked, add a blue background */
+  .container input:checked ~ .checkmark {
+    background-color: #2196F3;
+  }
+
+  /* Create the checkmark/indicator (hidden when not checked) */
+  .checkmark:after {
+    content: "";
+    position: absolute;
+    display: none;
+  }
+
+  /* Show the checkmark when checked */
+  .container input:checked ~ .checkmark:after {
+    display: block;
+  }
+
+  /* Style the checkmark/indicator */
+  .container .checkmark:after {
+    left: 9px;
+    top: 5px;
+    width: 5px;
+    height: 10px;
+    border: solid white;
+    border-width: 0 3px 3px 0;
+    -webkit-transform: rotate(45deg);
+    -ms-transform: rotate(45deg);
+    transform: rotate(45deg);
+  }
+  </style>
+
+  <script type="text/javascript" src="GLjs/glMatrix-0.9.5.min.js"></script>
+  <script type="text/javascript" src="GLjs/webgl-utils.js"></script>
+  <script type='text/javascript' src='GLjs/webgl-obj-loader.js'></script>
+
+  <script id="shader-header" type="x-shader/x-header">
+    #define MAX_LIGHT 4
+    #define POISSON_DISK_COUNT 16
+    #define M_PI 3.1415926535897932384626433832795
+    //#extension GL_EXT_shader_texture_lod : enable
+    //#extension GL_OES_standard_derivatives : enable
+    precision mediump float;
+    struct glLight {//don't use gl_light
+      vec4 position;
+      vec4 direction;
+      vec4 ambient;
+      vec4 diffuse;
+      vec4 specular;
+      float spotCutOff;
+      float constantAttenuation;
+      float linearAttenuation;
+      float quadraticAttenuation;
+      float spotExponent;
+      bool enable;
+    };
+    struct glMaterial {//don't use gl_Material
+      vec4 ambient;
+      vec4 diffuse;
+      vec4 specular;
+      vec4 emission;
+      float shiness;
+    };
+    bool isZero(float number){
+      return abs(number) <= 1e-3;
+    }
+    mat3 transpose(in mat3 inMatrix)
+    {
+        vec3 i0 = inMatrix[0];
+        vec3 i1 = inMatrix[1];
+        vec3 i2 = inMatrix[2];
+
+        mat3 outMatrix = mat3(
+            vec3(i0.x, i1.x, i2.x),
+            vec3(i0.y, i1.y, i2.y),
+            vec3(i0.z, i1.z, i2.z)
+        );
+
+        return outMatrix;
+    }
+    struct glFog {
+      float density;
+      vec4 color;
+      //1 linear; 2 exponential; 3 exponential square
+      int type;
+      //0 plane based; 1 range based
+      int depthType;
+    };
+    const int PLANE_BASED = 0;
+    const int RANGE_BASED = 1;
+    const int FOG_NONE = 0;
+    const int FOG_LINEAR = 1;
+    const int FOG_EXPONENTIAL = 2;
+    const int FOG_EXPONENTIAL_SQUARE = 3;
+    const float LOG2 = 1.442695;
+
+    float unpackDepth(const in vec4 rgbaDepth) {
+            const vec4 bitShift = vec4(1.0, 1.0/256.0, 1.0/(256.0 * 256.0), 1.0/(256.0*256.0*256.0));
+            float depth = dot(rgbaDepth, bitShift);
+            return depth;
+          }
+          vec4 thisDepth(float depth) {
+            const vec4 bitShift = vec4(1.0, 256.0, 256.0 * 256.0, 256.0 * 256.0 * 256.0);
+            const vec4 bitMask = vec4(1.0/256.0, 1.0/256.0, 1.0/256.0, 0.0);
+            vec4 rgbaDepth = fract(depth * bitShift);
+            rgbaDepth -= rgbaDepth.gbaa * bitMask;
+            return rgbaDepth;
+          }
+          void getPoissonDisk(out vec2[POISSON_DISK_COUNT] result){
+            result[0] = vec2( -0.94201624, -0.39906216 );
+            result[1] = vec2( 0.94558609, -0.76890725 );
+            result[2] = vec2( -0.094184101, -0.92938870 );
+            result[3] = vec2( 0.34495938, 0.29387760 );
+            result[4] = vec2( -0.91588581, 0.45771432 );
+            result[5] = vec2( -0.81544232, -0.87912464 );
+            result[6] = vec2( -0.38277543, 0.27676845 );
+            result[7] = vec2( 0.97484398, 0.75648379 );
+            result[8] = vec2( 0.44323325, -0.97511554 );
+            result[9] = vec2( 0.53742981, -0.47373420 );
+            result[10] = vec2( -0.26496911, -0.41893023 );
+            result[11] = vec2( 0.79197514, 0.19090188 );
+            result[12] = vec2( -0.24188840, 0.99706507 );
+            result[13] = vec2( -0.81409955, 0.91437590 );
+            result[14] = vec2( 0.19984126, 0.78641367 );
+            result[15] = vec2( 0.14383161, -0.14100790 );
+          }
+  </script>
+
+
+  <script id="shader-fs" type="x-shader/x-fragment">
+  precision mediump float;
+
+  varying vec4 vColor;
+  varying vec3 vTextureCoord;
+  varying vec3 vNormal;
+  varying vec3 vCubeCoord;
+  varying vec3 vLight;
+  varying vec3 vEye;
+varying vec4 viewSpace;
+varying vec4 vPositionFromLight;
+
+  uniform bool enableTexture;
+  uniform bool transmission;
+  uniform bool duckbody;
+  uniform float env_factor;
+
+  uniform sampler2D uSampler;
+  uniform samplerCube uSamplerCube;
+  uniform samplerCube uSamplerPig;
+  uniform sampler2D uShadowSampler;
+
+  uniform bool uUseLighting;
+   uniform bool uUseShadow;
+
+  uniform mat4 uModelMatrix;
+  uniform mat4 uViewMatrix;
+  uniform mat3 uNormalMatrix;
+
+  uniform glMaterial uFrontMaterial;
+  uniform glLight uLights[MAX_LIGHT];
+  uniform glFog uFogData;
+
+  vec4 calculateLight(
+    glLight lightData, glMaterial material_data,
+    vec3 Normal, vec3 Light, vec3 LightDir, float LightDist, vec3 Eye, vec3 Half, vec4 texel, bool has_shader
+  ){
+
+    vec3 shadowCoord = (vPositionFromLight.xyz/vPositionFromLight.w)/2.0 + 0.5;
+    vec4 rgbaDepth = texture2D(uShadowSampler, shadowCoord.st);
+
+    float bias = 0.005;
+    float depth = unpackDepth(rgbaDepth);
+    float drawing_depth = unpackDepth(thisDepth(shadowCoord.z));
+    vec2 poissonDisk[POISSON_DISK_COUNT];
+    bool in_shadow = false;
+    getPoissonDisk(poissonDisk);
+
+    if(drawing_depth > depth + bias){
+      in_shadow = true;
+    }
+
+
+    float I_D = max(dot(Normal,Light),0.0);
+    float I_S = pow(max(dot(Half,Normal),0.0),material_data.shiness);
+
+    vec4 diffuse = vec4(0.0, 0.0, 0.0, 0.0);
+    vec4 specular = vec4(0.0, 0.0, 0.0, 0.0);
+    if(!in_shadow){
+      diffuse = I_D * lightData.diffuse * material_data.diffuse * texel;
+      specular = vec4(I_S * lightData.specular.rgb * material_data.specular.rgb, 1.0);
+    }
+    vec4 ambient = lightData.ambient * material_data.ambient * texel;
+    float attenuation = 1.0;
+
+    if (lightData.spotCutOff <= M_PI - 1e-3 && lightData.spotCutOff >= -1e-3) { // the light is a spotlight
+        float spotCosine = dot(LightDir, -Light.xyz);
+        if (spotCosine >= cos(lightData.spotCutOff)) {
+            attenuation = clamp(pow(spotCosine,lightData.spotExponent), 0.0, 1.0);
+        }else{
+          attenuation = 0.0;
+        }
+    }
+
+    attenuation = attenuation / (lightData.constantAttenuation
+        + lightData.linearAttenuation * LightDist
+        + lightData.quadraticAttenuation * LightDist * LightDist);
+
+    return ambient + ( diffuse + specular)
+     * attenuation + texel * material_data.emission
+    ;
+  }
+
+  void main(void) {
+    vec4 texel = vColor;
+    if(duckbody){
+      texel = textureCube(uSamplerPig, vTextureCoord.stp);
+    }
+    else{
+      if(enableTexture){
+        texel = texture2D(uSampler, vTextureCoord.st);
+      }
+    }
+    //vec3 fTexCoord = vec4(vNormal,1.0).xyz;
+    if(!transmission){
+      vec4 texel_cube = textureCube(uSamplerCube, vCubeCoord)*(env_factor);
+      if(env_factor > 1.0)texel = texel * texel_cube * (env_factor - 1.0) + texel * (2.0 - env_factor);
+      else texel = texel*(1.0-env_factor) + texel_cube*(env_factor);
+    }else{
+      texel = textureCube(uSamplerCube, vCubeCoord);
+    }
+
+    //
+
+    if (!uUseLighting) {
+    gl_FragColor = texel;
+  }else{
+    vec3 illumination = vec3(0.0, 0.0, 0.0);
+    for(int i = 0; i < MAX_LIGHT; ++i){
+        if(!uLights[i].enable) continue;
+        vec4 eyeLightPos = uViewMatrix * uLights[i].position;
+        vec3 Normal = normalize(vNormal);
+
+        vec3 Light = eyeLightPos.xyz + vEye.xyz;
+        float LightDist = length(Light);
+        Light = normalize(Light);
+        vec3 LightDir = Light;
+        if( !isZero(length(uLights[i].direction.xyz)) ) LightDir = normalize(-(uViewMatrix * uLights[i].direction).xyz);
+        if( isZero(uLights[i].position.w) ) Light = LightDir; // is directional light
+
+        vec3 Eye = normalize(vEye);
+        vec3 Half = normalize(Eye+Light);
+
+        illumination +=
+            clamp(
+                  calculateLight(uLights[i], uFrontMaterial, Normal, Light, LightDir, LightDist, Eye, Half, texel, i==0).rgb
+            , 0.0, 1.0)
+            ;
+    }
+    gl_FragColor = vec4(clamp(illumination, 0.0, 1.0), texel.a);
+
+  }
+
+  vec4 preFragColor = gl_FragColor;
+
+  vec4 finalColor = vec4(0.0, 0.0, 0.0, 1.0);
+  //distance
+  float dist = 0.0;
+  float fogFactor = 0.0;
+
+  //compute distance used in fog equations
+  if(uFogData.depthType == PLANE_BASED)//select plane based vs range based
+  {
+    //plane based
+    dist = abs(viewSpace.z);
+    //dist = (gl_FragCoord.z / gl_FragCoord.w);
+  }
+  else //RANGE_BASED
+  {
+    //range based
+    dist = length(viewSpace);
+  }
+
+  if(uFogData.type == FOG_NONE)//fog off
+  {
+    finalColor = preFragColor;
+  }
+  if(uFogData.type == FOG_LINEAR)//linear fog
+  {
+    // 20 - fog starts; 80 - fog ends
+    fogFactor = (80.0 - dist)/(80.0 - 20.0);
+    fogFactor = clamp( fogFactor, 0.0, 1.0 );
+
+    //if you inverse color in glsl mix function you have to
+    //put 1.0 - fogFactor
+    finalColor = mix(uFogData.color, preFragColor, fogFactor);
+  }
+  else if( uFogData.type == FOG_EXPONENTIAL)// exponential fog
+  {
+    fogFactor = 1.0 /exp(dist * uFogData.density);
+    fogFactor = clamp( fogFactor, 0.0, 1.0 );
+
+    // mix function fogColor⋅(1−fogFactor) + lightColor⋅fogFactor
+    finalColor = mix(uFogData.color, preFragColor, fogFactor);
+  }
+  else if( uFogData.type == FOG_EXPONENTIAL_SQUARE)
+  {
+    fogFactor = 1.0 /exp( (dist * uFogData.density)* (dist * uFogData.density));
+    fogFactor = clamp( fogFactor, 0.0, 1.0 );
+
+    finalColor = mix(uFogData.color, preFragColor, fogFactor);
+  }
+
+  gl_FragColor = finalColor;
+  if(texel.a <= 0.5)discard;
+}
+  </script>
+
+  <script id="shader-vs" type="x-shader/x-vertex">
+  attribute vec3 aVertexPosition;
+  attribute vec4 aVertexColor;
+  attribute vec3 aVertexNormal;
+  attribute vec3 aTextureCoord;
+
+  uniform mat4 uViewMatrix;
+  uniform mat4 uViewMatrixInv;
+  uniform mat4 uModelMatrix;
+  uniform mat4 uProjectionMatrix;
+  uniform mat3 uNormalMatrix;
+  uniform bool enableTexture;
+  uniform bool transmission;
+  uniform glLight uLights[MAX_LIGHT];
+  uniform mat4 uViewProjectionMatrixFromLight;
+
+  uniform bool uUseLighting;
+  varying vec3 vTextureCoord;
+  varying vec3 vCubeCoord;
+  varying vec4 vColor;
+  varying vec3 vNormal;
+  varying vec3 vEye;
+  varying vec3 vLight;
+  varying vec4 viewSpace;
+  varying vec4 vPositionFromLight;
+  void main(void) {
+    mat4 lModelViewMatrix = uViewMatrix * uModelMatrix;
+    viewSpace = uProjectionMatrix * lModelViewMatrix * vec4(aVertexPosition, 1.0);
+    vPositionFromLight = uViewProjectionMatrixFromLight * uModelMatrix * vec4(aVertexPosition, 1.0);
+    gl_Position = viewSpace;
+    vColor = aVertexColor;
+    vTextureCoord = vec3(0.0, 0.0, 0.0);
+    if(enableTexture){
+      vTextureCoord = aTextureCoord;
+    }
+
+    vNormal =  normalize(uNormalMatrix * aVertexNormal);
+    if(!transmission){
+      vec3 Reflection = reflect((lModelViewMatrix * vec4(aVertexPosition, 1.0)).xyz, vNormal);
+      vCubeCoord.stp = vec3(Reflection.x, -Reflection.yz);
+    }else{
+
+      //vec3 focusVec = normalize(uModelMatrix * vec4(normalize((lModelViewMatrix *vec4(aVertexPosition, 1.0)).xyz), 1.0)).xyz;
+      vec3 focusVec = vec4(normalize(
+        (uViewMatrixInv * ((lModelViewMatrix *vec4(aVertexPosition, 1.0))-vec4(0.0,8.0,-50.0, 1.0))).xyz
+      ), 1.0).xyz;
+      vCubeCoord.stp = vec3(focusVec.x, -focusVec.yz);
+    }
+
+    //local variable; ModelViewMatrix; Model Matrix和View Matrix之積 (後乘法)
+    gl_Position = uProjectionMatrix * lModelViewMatrix * vec4(aVertexPosition, 1.0);
+    vTextureCoord = aTextureCoord;
+
+    vec4 eyePosition = lModelViewMatrix * vec4(aVertexPosition, 1.0);
+    vNormal =  normalize(uNormalMatrix * aVertexNormal);
+    vEye = -eyePosition.xyz;
+
+
+  }
+  </script>
+
+  <script id="objshader-fs" type="x-shader/x-fragment">
+  precision mediump float;
+
+  varying vec3 vTextureCoord;
+  varying vec3 vNormal;
+  varying vec3 vCubeCoord;
+  varying vec3 vLight;
+  varying vec3 vEye;
+  varying vec4 viewSpace;
+
+  varying vec3 vDiffuse;
+  varying vec3 vSpecular;
+  varying float vSpecularExponent;
+  varying vec4 vPositionFromLight;
+
+  uniform bool enableTexture;
+  uniform bool transmission;
+  uniform bool duckbody;
+  uniform float env_factor;
+
+  uniform sampler2D uSampler;
+  uniform samplerCube uSamplerCube;
+  uniform samplerCube uSamplerPig;
+  uniform sampler2D uShadowSampler;
+
+  uniform bool uUseLighting;
+   uniform bool uUseShadow;
+
+  uniform mat4 uModelMatrix;
+  uniform mat4 uViewMatrix;
+  uniform mat3 uNormalMatrix;
+
+  uniform glMaterial uFrontMaterial;
+  uniform glLight uLights[MAX_LIGHT];
+  uniform glFog uFogData;
+
+  vec4 calculateLight(
+    glLight lightData, glMaterial material_data,
+    vec3 Normal, vec3 Light, vec3 LightDir, float LightDist, vec3 Eye, vec3 Half, vec4 texel, bool has_shader
+  ){
+
+
+    vec3 shadowCoord = (vPositionFromLight.xyz/vPositionFromLight.w)/2.0 + 0.5;
+    vec4 rgbaDepth = texture2D(uShadowSampler, shadowCoord.st);
+
+    float bias = 0.005;
+    float depth = unpackDepth(rgbaDepth);
+    float drawing_depth = unpackDepth(thisDepth(shadowCoord.z));
+    vec2 poissonDisk[POISSON_DISK_COUNT];
+    bool in_shadow = false;
+    getPoissonDisk(poissonDisk);
+
+    if(drawing_depth > depth + bias){
+      in_shadow = true;
+    }
+
+
+    float I_D = max(dot(Normal,Light),0.0);
+    float I_S = pow(max(dot(Half,Normal),0.0),vSpecularExponent);
+    vec4 diffuse = vec4(0.0, 0.0, 0.0, 0.0);
+    vec4 specular = vec4(0.0, 0.0, 0.0, 0.0);
+    if(!in_shadow){
+      diffuse = I_D * lightData.diffuse * vec4(vDiffuse,1.0) * texel;
+      specular = vec4(I_S * lightData.specular.rgb * vSpecular.rgb, 1.0);
+    }
+    vec4 ambient = lightData.ambient * material_data.ambient * texel;
+    float attenuation = 1.0;
+
+    if (lightData.spotCutOff <= M_PI - 1e-3 && lightData.spotCutOff >= -1e-3) { // the light is a spotlight
+        float spotCosine = dot(LightDir, -Light.xyz);
+        if (spotCosine >= cos(lightData.spotCutOff)) {
+            attenuation = clamp(pow(spotCosine,lightData.spotExponent), 0.0, 1.0);
+        }else{
+          attenuation = 0.0;
+        }
+    }
+
+    attenuation = attenuation / (lightData.constantAttenuation
+        + lightData.linearAttenuation * LightDist
+        + lightData.quadraticAttenuation * LightDist * LightDist);
+
+    return ambient + ( diffuse + specular )
+     * attenuation
+    ;
+  }
+
+  void main(void) {
+    vec4 vColor = vec4(1.0, 1.0, 1.0, 1.0);
+    vec4 texel = vColor;
+    if(duckbody){
+      texel = textureCube(uSamplerPig, vTextureCoord.stp);
+    }
+    else{
+      if(enableTexture){
+        texel = texture2D(uSampler, vTextureCoord.st);
+      }
+    }
+    //vec3 fTexCoord = vec4(vNormal,1.0).xyz;
+    if(!transmission){
+      vec4 texel_cube = textureCube(uSamplerCube, vCubeCoord)*(env_factor);
+      if(env_factor > 1.0)texel = texel * texel_cube * (env_factor - 1.0) + texel * (2.0 - env_factor);
+      else texel = texel*(1.0-env_factor) + texel_cube*(env_factor);
+    }else{
+      texel = textureCube(uSamplerCube, vCubeCoord);
+    }
+
+    //
+
+    if (!uUseLighting) {
+    gl_FragColor = texel;
+  }else{
+    vec3 illumination = vec3(0.0, 0.0, 0.0);
+    for(int i = 0; i < MAX_LIGHT; ++i){
+        if(!uLights[i].enable) continue;
+        vec4 eyeLightPos = uViewMatrix * uLights[i].position;
+        vec3 Normal = normalize(vNormal);
+
+        vec3 Light = eyeLightPos.xyz + vEye.xyz;
+        float LightDist = length(Light);
+        Light = normalize(Light);
+        vec3 LightDir = Light;
+        if( !isZero(length(uLights[i].direction.xyz)) ) LightDir = normalize(-(uViewMatrix * uLights[i].direction).xyz);
+        if( isZero(uLights[i].position.w) ) Light = LightDir; // is directional light
+
+        vec3 Eye = normalize(vEye);
+        vec3 Half = normalize(Eye+Light);
+
+        illumination +=
+            clamp(
+                  calculateLight(uLights[i], uFrontMaterial, Normal, Light, LightDir, LightDist, Eye, Half, texel, i==0).rgb
+            , 0.0, 1.0)
+            ;
+    }
+    gl_FragColor = vec4(clamp(illumination, 0.0, 1.0), texel.a);
+
+  }
+
+  vec4 preFragColor = gl_FragColor;
+
+  vec4 finalColor = vec4(0.0, 0.0, 0.0, 1.0);
+  //distance
+  float dist = 0.0;
+  float fogFactor = 0.0;
+
+  //compute distance used in fog equations
+  if(uFogData.depthType == PLANE_BASED)//select plane based vs range based
+  {
+    //plane based
+    dist = abs(viewSpace.z);
+    //dist = (gl_FragCoord.z / gl_FragCoord.w);
+  }
+  else //RANGE_BASED
+  {
+    //range based
+    dist = length(viewSpace);
+  }
+
+  if(uFogData.type == FOG_NONE)//fog off
+  {
+    finalColor = preFragColor;
+  }
+  if(uFogData.type == FOG_LINEAR)//linear fog
+  {
+    // 20 - fog starts; 80 - fog ends
+    fogFactor = (80.0 - dist)/(80.0 - 20.0);
+    fogFactor = clamp( fogFactor, 0.0, 1.0 );
+
+    //if you inverse color in glsl mix function you have to
+    //put 1.0 - fogFactor
+    finalColor = mix(uFogData.color, preFragColor, fogFactor);
+  }
+  else if( uFogData.type == FOG_EXPONENTIAL)// exponential fog
+  {
+    fogFactor = 1.0 /exp(dist * uFogData.density);
+    fogFactor = clamp( fogFactor, 0.0, 1.0 );
+
+    // mix function fogColor⋅(1−fogFactor) + lightColor⋅fogFactor
+    finalColor = mix(uFogData.color, preFragColor, fogFactor);
+  }
+  else if( uFogData.type == FOG_EXPONENTIAL_SQUARE)
+  {
+    fogFactor = 1.0 /exp( (dist * uFogData.density)* (dist * uFogData.density));
+    fogFactor = clamp( fogFactor, 0.0, 1.0 );
+
+    finalColor = mix(uFogData.color, preFragColor, fogFactor);
+  }
+
+  gl_FragColor = finalColor;
+  }
+  </script>
+
+  <script id="objshader-vs" type="x-shader/x-vertex">
+  attribute vec3 aVertexPosition;
+  attribute vec2 aTextureCoord;
+  attribute vec3 aVertexNormal;
+
+  attribute vec3 aDiffuse;
+  attribute vec3 aSpecular;
+  attribute float aSpecularExponent;
+
+  uniform mat4 uViewMatrix;
+  uniform mat4 uViewMatrixInv;
+  uniform mat4 uModelMatrix;
+  uniform mat4 uProjectionMatrix;
+  uniform mat3 uNormalMatrix;
+  uniform bool enableTexture;
+  uniform bool transmission;
+  uniform glLight uLights[MAX_LIGHT];
+  uniform mat4 uViewProjectionMatrixFromLight;
+
+  uniform bool uUseLighting;
+  varying vec3 vTextureCoord;
+  varying vec3 vCubeCoord;
+  varying vec3 vNormal;
+  varying vec3 vEye;
+  varying vec3 vLight;
+  varying vec4 viewSpace;
+
+  varying vec3 vDiffuse;
+  varying vec3 vSpecular;
+  varying float vSpecularExponent;
+  varying vec4 vPositionFromLight;
+  void main(void) {
+    mat4 lModelViewMatrix = uViewMatrix * uModelMatrix;
+    viewSpace = uProjectionMatrix * lModelViewMatrix * vec4(aVertexPosition, 1.0);
+    vPositionFromLight = uViewProjectionMatrixFromLight * uModelMatrix * vec4(aVertexPosition, 1.0);
+    gl_Position = viewSpace;
+
+    vTextureCoord = vec3(0.0, 0.0, 0.0);
+    if(enableTexture){
+      vTextureCoord = vec3(aTextureCoord, 0.0);
+    }
+
+    vNormal =  normalize(uNormalMatrix * aVertexNormal);
+    if(!transmission){
+      vec3 Reflection = reflect((lModelViewMatrix * vec4(aVertexPosition, 1.0)).xyz, vNormal);
+      vCubeCoord.stp = vec3(Reflection.x, -Reflection.yz);
+    }else{
+
+      //vec3 focusVec = normalize(uModelMatrix * vec4(normalize((lModelViewMatrix *vec4(aVertexPosition, 1.0)).xyz), 1.0)).xyz;
+      vec3 focusVec = vec4(normalize(
+        (uViewMatrixInv * ((lModelViewMatrix *vec4(aVertexPosition, 1.0))-vec4(0.0,8.0,-50.0, 1.0))).xyz
+      ), 1.0).xyz;
+      vCubeCoord.stp = vec3(focusVec.x, -focusVec.yz);
+    }
+
+    //local variable; ModelViewMatrix; Model Matrix和View Matrix之積 (後乘法)
+    gl_Position = uProjectionMatrix * lModelViewMatrix * vec4(aVertexPosition, 1.0);
+    vTextureCoord = vec3(aTextureCoord, 0.0);
+
+    vec4 eyePosition = lModelViewMatrix * vec4(aVertexPosition, 1.0);
+    vNormal =  normalize(uNormalMatrix * aVertexNormal);
+    vEye = -eyePosition.xyz;
+
+    //配合obj檔
+    vDiffuse = aDiffuse;
+    vSpecular = aSpecular;
+    vSpecularExponent = aSpecularExponent;
+  }
+  </script>
+
+  <script id="shadowshader-fs" type="x-shader/x-fragment">
+    varying vec2 vTextureCoord;
+    uniform sampler2D uSampler;
+    void main(void) {
+        const vec4 bitShift = vec4(1.0, 256.0, 256.0 * 256.0, 256.0 * 256.0 * 256.0);
+        const vec4 bitMask = vec4(1.0/256.0, 1.0/256.0, 1.0/256.0, 0.0);
+        vec4 texel = texture2D(uSampler, vTextureCoord.st);
+        if(texel.a <= 0.2)discard;
+        vec4 rgbaDepth = fract(gl_FragCoord.z * bitShift);
+        rgbaDepth -= rgbaDepth.gbaa * bitMask;
+        gl_FragColor = rgbaDepth;
+    }
+  </script>
+
+  <script id="shadowshader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    uniform mat4 uViewMatrix;
+    uniform mat4 uModelMatrix;
+    uniform mat4 uProjectionMatrix;
+    attribute vec2 aTextureCoord;
+    varying vec2 vTextureCoord;
+    void main(void) {
+      mat4 lModelViewMatrix = uViewMatrix * uModelMatrix;
+      gl_Position = uProjectionMatrix * lModelViewMatrix * vec4(aVertexPosition, 1.0);
+      vTextureCoord = aTextureCoord;
+    }
+  </script>
+
+  <script type="text/javascript">
+
+    var gl;
+
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("experimental-webgl", {stencil:true});
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+            gl.getExtension('OES_standard_derivatives');
+            gl.getExtension('EXT_shader_texture_lod');
+        } catch (e) {
+            gl = null;
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+        //若不提供uniform boolean傳遞，則用uniform1i代替
+        if(typeof gl.uniform1b !== 'function')
+        gl.uniform1b = function(binding_data, bool_val){
+          gl.uniform1i(binding_data, !bool_val ? 0 : 1);
+        };
+    }
+
+    var lightStructMembers = [
+          "position",
+          "direction",
+
+          "diffuse",
+          "specular",
+          "ambient",
+
+          "spotCutOff",
+          "constantAttenuation",
+          "linearAttenuation",
+          "quadraticAttenuation",
+          "spotExponent",
+          "enable"
+        ];
+
+    var materialStructMembers = [
+          "ambient",
+          "diffuse",
+          "specular",
+          "emission",
+          "shiness"
+    ];
+
+    var fogStructMembers = [
+      "density",
+      "color",
+      "type",
+      "depthType",
+    ];
+    fogStructMembers.EnumType = {"none":0, "linear":1, "exponential":2, "exponential_square": 3};
+    fogStructMembers.EnumDepthType = {"plane_based":0, "range_based":1};
+
+    var light_sources = [];
+    var numLights = 4;
+
+
+    function getShader(gl, id) {
+      var shaderScript = document.getElementById(id);
+      var shaderHeader = document.getElementById("shader-header");
+      if (!shaderScript) {
+        return null;
+      }
+
+      var str = "", header = '';
+      var k = shaderScript.firstChild;
+      while (k) {
+        if (k.nodeType == 3) {
+          str += k.textContent;
+        }
+        k = k.nextSibling;
+      }
+
+      k = shaderHeader.firstChild;
+      while (k) {
+        if (k.nodeType == 3) header += k.textContent;
+        k = k.nextSibling;
+      }
+      if(header && header !== '')str = header + '\n' + str;
+
+      var shader;
+      if (shaderScript.type == "x-shader/x-fragment") {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+      } else if (shaderScript.type == "x-shader/x-vertex") {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+      } else {
+        return null;
+      }
+
+      gl.shaderSource(shader, str);
+      gl.compileShader(shader);
+
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+      }
+
+      return shader;
+    }
+
+
+    var shaderPrograms;
+    var defaultShader = 0;
+    var objShader = 1;
+    var shadowshader=2;
+    var shader_name = ["defaultShader","objShader","shadowshader"];
+     var shaderProgram;
+     var shader_inuse = defaultShader;
+    function initShaders() {
+      var fragmentShader = [getShader(gl, "shader-fs"),getShader(gl, "objshader-fs"),getShader(gl, "shadowshader-fs")];
+      var vertexShader = [getShader(gl, "shader-vs"),getShader(gl, "objshader-vs"),getShader(gl, "shadowshader-vs")];
+
+      shaderPrograms = [gl.createProgram(),gl.createProgram(),gl.createProgram()];
+
+      for(var i=0; i<shaderPrograms.length; ++i){
+        gl.attachShader(shaderPrograms[i], vertexShader[i]);
+        gl.attachShader(shaderPrograms[i], fragmentShader[i]);
+        gl.linkProgram(shaderPrograms[i]);
+
+        if (!gl.getProgramParameter(shaderPrograms[i], gl.LINK_STATUS)) {
+          alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderPrograms[i]);
+        shaderPrograms[i].name = shader_name[i];
+
+        var attrs = {
+          aVertexPosition: OBJ.Layout.POSITION.key,
+          aTextureCoord: OBJ.Layout.UV.key,
+          aVertexNormal: OBJ.Layout.NORMAL.key,
+          aDiffuse: OBJ.Layout.DIFFUSE.key,
+          aSpecular: OBJ.Layout.SPECULAR.key,
+          aSpecularExponent: OBJ.Layout.SPECULAR_EXPONENT.key
+        };
+        var attr_it = [
+          "aVertexPosition",
+          "aTextureCoord",
+          "aVertexNormal",
+          "aDiffuse",
+          "aSpecular",
+          "aSpecularExponent",
+        ];
+        //if(i==objShader){
+          shaderPrograms[i].attrIndices = {};
+          for (var i_a = 0; i_a < attr_it.length; ++i_a) {
+            var attrName = attr_it[i_a];
+            if (!attrs.hasOwnProperty(attrName)) {
+              continue;
+            }
+            shaderPrograms[i].attrIndices[attrName] = gl.getAttribLocation(shaderPrograms[i], attrName);
+            if (shaderPrograms[i].attrIndices[attrName] != -1) {
+              gl.enableVertexAttribArray(shaderPrograms[i].attrIndices[attrName]);
+            } else {
+              console.warn(
+                'Shader attribute "' +
+                attrName +
+                '" not found in shader. Is it undeclared or unused in the shader code?'
+              );
+            }
+          }
+          shaderPrograms[i].applyAttributePointers = function(model) {
+            const layout = model.mesh.vertexBuffer.layout;
+            for (const attrName in attrs) {
+              if (!attrs.hasOwnProperty(attrName) || shaderProgram.attrIndices[attrName] == -1) {
+                continue;
+              }
+              const layoutKey = attrs[attrName];
+              if (shaderProgram.attrIndices[attrName] != -1) {
+                const attr = layout[layoutKey];
+                gl.vertexAttribPointer(
+                  shaderProgram.attrIndices[attrName],
+                  attr.size,
+                  gl[attr.type],
+                  attr.normalized,
+                  attr.stride,
+                  attr.offset
+                );
+              }
+            }
+          };
+
+        //}else{
+          shaderPrograms[i].vertexPositionAttribute = gl.getAttribLocation(shaderPrograms[i], "aVertexPosition");
+          gl.enableVertexAttribArray(shaderPrograms[i].vertexPositionAttribute);
+
+          shaderPrograms[i].vertexColorAttribute = gl.getAttribLocation(shaderPrograms[i], "aVertexColor");
+          gl.enableVertexAttribArray(shaderPrograms[i].vertexColorAttribute);
+
+          shaderPrograms[i].vertexNormalAttribute = gl.getAttribLocation(shaderPrograms[i], "aVertexNormal");
+          gl.enableVertexAttribArray(shaderPrograms[i].vertexNormalAttribute);
+
+          shaderPrograms[i].vertexTextureCoordAttribute = gl.getAttribLocation(shaderPrograms[i], "aTextureCoord");
+          gl.enableVertexAttribArray(shaderPrograms[i].vertexTextureCoordAttribute);
+
+          shaderPrograms[i].ViewProjectionMatrixFromLightUniform =
+          gl.getUniformLocation(shaderPrograms[i], "uViewProjectionMatrixFromLight");
+
+        //}
+
+        shaderPrograms[i].projectionMatrixUniform =
+          gl.getUniformLocation(shaderPrograms[i], "uProjectionMatrix");
+        shaderPrograms[i].viewMatrixUniform =
+          gl.getUniformLocation(shaderPrograms[i], "uViewMatrix");
+        shaderPrograms[i].modelMatrixUniform =
+          gl.getUniformLocation(shaderPrograms[i], "uModelMatrix");
+        shaderPrograms[i].normalMatrixUniform =
+          gl.getUniformLocation(shaderPrograms[i], "uNormalMatrix");
+        shaderPrograms[i].inverseViewMatrixUniform =
+          gl.getUniformLocation(shaderPrograms[i], "uViewMatrixInv");
+
+        shaderPrograms[i].enableTextureUniform =
+          gl.getUniformLocation(shaderPrograms[i], "enableTexture");
+        shaderPrograms[i].transmissionUniform =
+          gl.getUniformLocation(shaderPrograms[i], "transmission");
+        shaderPrograms[i].envFactorUniform =
+          gl.getUniformLocation(shaderPrograms[i], "env_factor");
+        shaderPrograms[i].boolPigBodyUniform =
+          gl.getUniformLocation(shaderPrograms[i], "duckbody");
+
+        shaderPrograms[i].samplerUniform = gl.getUniformLocation(shaderPrograms[i], "uSampler");
+        shaderPrograms[i].samplerCubeUniform = gl.getUniformLocation(shaderPrograms[i], "uSamplerCube");
+        shaderPrograms[i].samplerPigUniform = gl.getUniformLocation(shaderPrograms[i], "uSamplerPig");
+        shaderPrograms[i].shadowSamplerUniform = gl.getUniformLocation(shaderPrograms[i], "uShadowSampler");
+
+        shaderPrograms[i].useLightingUniform = gl.getUniformLocation(shaderPrograms[i], "uUseLighting");
+        shaderPrograms[i].useShadowUniform = gl.getUniformLocation(shaderPrograms[i], "uUseShadow");
+        shaderPrograms[i].ambientColorUniform = gl.getUniformLocation(shaderPrograms[i], "uAmbientColor");
+        shaderPrograms[i].pointLightingLocationUniform = gl.getUniformLocation(shaderPrograms[i], "uPointLightingLocation");
+        shaderPrograms[i].pointLightingColorUniform = gl.getUniformLocation(shaderPrograms[i], "uPointLightingColor");
+
+        shaderPrograms[i].FrontMaterialUniform = {};
+        var structMembers = {};
+        //將結構中每個成員變數Bind，並且儲存Bind資訊
+        for (var jj = 0; jj < materialStructMembers.length; ++jj) {
+          var name = materialStructMembers[jj];
+          structMembers[name] = gl.getUniformLocation(shaderPrograms[i],
+            //組合出GLSL的Syntax以便Binding
+            "uFrontMaterial." + name);
+        }
+        shaderPrograms[i].FrontMaterialUniform = structMembers;
+
+        shaderPrograms[i].lightsUniform = {};
+        //場景中可以有多盞燈
+        for (var ll = 0; ll < numLights; ++ll) {
+          structMembers = {};
+          //將結構中每個成員變數Bind，並且儲存Bind資訊
+          for (var jj = 0; jj < lightStructMembers.length; ++jj) {
+            var name = lightStructMembers[jj];
+            structMembers[name] = gl.getUniformLocation(shaderPrograms[i],
+              //組合出GLSL的Syntax以便Binding
+              "uLights[" + ll + "]." + name);
+          }
+          shaderPrograms[i].lightsUniform[ll] = structMembers;
+        }
+
+        shaderPrograms[i].FogDataUniform = {};
+        structMembers = {};
+        //將結構中每個成員變數Bind，並且儲存Bind資訊
+        for (var jj = 0; jj < fogStructMembers.length; ++jj) {
+          var name = fogStructMembers[jj];
+          if(typeof name !== "string")continue;
+          structMembers[name] = gl.getUniformLocation(shaderPrograms[i],
+            //組合出GLSL的Syntax以便Binding
+            "uFogData." + name);
+        }
+        shaderPrograms[i].FogDataUniform = structMembers;
+      }
+
+      shader_inuse = defaultShader;//objShader
+      gl.useProgram(shaderPrograms[shader_inuse]);
+      shaderProgram = shaderPrograms[shader_inuse];
+    }
+
+    function isPowerOfTwo(x) {
+      return (x & (x - 1)) == 0;
+    }
+
+    //標記WebM畫面是否有更新
+     var copyWEBM_texture = false;
+
+     function setupWEBM_texture(url) {
+       const WEBM_texture = document.createElement('video');
+
+       var playing = false;
+       var timeupdate = false;
+
+       WEBM_texture.autoplay = true;
+       //WEBM_texture.muted = true;
+       WEBM_texture.loop = true;
+
+       // Waiting for these 2 events ensures
+       // there is data in the WEBM_texture
+       //為了讓他能不停更新圖像，因此定義讓其於各個事件檢查撥放狀態
+       WEBM_texture.addEventListener('playing', function() {
+         playing = true;
+         checkReady();
+       }, true);
+
+       WEBM_texture.addEventListener('timeupdate', function() {
+         timeupdate = true;
+         checkReady();
+       }, true);
+
+       WEBM_texture.src = url;
+       WEBM_texture.play();
+
+       function checkReady() {
+         if (playing && timeupdate) {
+
+           copyWEBM_texture = true;
+         }
+       }
+
+       return WEBM_texture;
+     }
+
+   function BindWEBMtexture(gl, texture, webm) {
+     const level = 0;
+     const internalFormat = gl.RGBA;
+     const srcFormat = gl.RGBA;
+     const srcType = gl.UNSIGNED_BYTE;
+     gl.bindTexture(gl.TEXTURE_2D, texture);
+     gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+       srcFormat, srcType, webm);
+   gl.generateMipmap(gl.TEXTURE_2D);
+     }
+
+    function handleLoadedTexture(texture) {
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+
+      //判斷紋理的長寬是否為2的冪次方後，加入紋理長寬不同維度的處理辦法
+      if (isPowerOfTwo(texture.image.width) && isPowerOfTwo(texture.image.height)){
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+      }else{
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      }
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function handleLoadedCubeMap(texture){
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        //put images on cubemap
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_Z ,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE, texture.image[0]);
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_Y ,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE, texture.image[1]);
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_Z ,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE, texture.image[2]);
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X ,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE, texture.image[3]);
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_X ,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE, texture.image[4]);
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_Y ,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE, texture.image[5]);
+
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+
+        //gl.generateMipmap();
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function loadTexture(file_name) {
+      var tes_buf = gl.createTexture(); //建立紋理物件並傳送給iglTexture
+      tes_buf.image = new Image();
+      tes_buf.image.onload = function () {  //回呼函式(callback function)
+        handleLoadedTexture(tes_buf);
+      }
+
+      tes_buf.image.src = file_name;
+      return tes_buf;
+    }
+    function loadCubeMap(file_name) {
+      var tes_buf = gl.createTexture(); //建立紋理物件並傳送給iglTexture
+      var faces = ["front", "top", "back", "right", "left", "bottom"];
+      var ss = file_name.split('.');
+      var file_name_postfix = '.' + ss[ss.length-1];
+      var file_prefix = ss[0];
+      for(var j=1; j<ss.length-1; ++j)file_prefix += ss[j];
+      tes_buf.image = [];
+      var i=0;
+      var call_back_loop = function(){
+        tes_buf.image[i] = new Image();
+        if(i+1 >= faces.length){
+          tes_buf.image[i].onload = function () {  //回呼函式(callback function)
+            handleLoadedCubeMap(tes_buf);
+          };
+        }else{
+          tes_buf.image[i].onload = call_back_loop;
+        }
+        tes_buf.image[i].src = file_prefix + faces[i] + file_name_postfix;
+        console.log(tes_buf.image[i].src);
+        //console.log(tes_buf.image);
+        ++i;
+      }
+      call_back_loop();
+      return tes_buf;
+    }
+
+    function initShadowbufferObject(gl, s_width, s_height) {
+       var texture, depthBuffer;
+       var framebuffer = gl.createFramebuffer();
+
+       texture = gl.createTexture();
+       gl.activeTexture(gl.TEXTURE3);
+       gl.bindTexture(gl.TEXTURE_2D, texture);
+       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, s_width, s_height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+
+       depthBuffer = gl.createRenderbuffer();
+       gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+       gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, s_width, s_height);
+
+       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+       framebuffer.texture = texture;
+       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+       gl.bindTexture(gl.TEXTURE_2D, null);
+       gl.activeTexture(gl.TEXTURE0);
+       gl.bindTexture(gl.TEXTURE_2D, null);
+       gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+       framebuffer.width = s_width;
+       framebuffer.height = s_height;
+       framebuffer.aspect = s_width / s_height;
+       return framebuffer;
+     }
+
+    var meshes = {};
+    var models = {};
+
+    var skyTexture;
+    var environmentalTexture;
+    var woodenTexture;
+    var duckTexture = {};
+    var golddenTexture;
+
+    var crateTexture;
+    var screenTexture;
+  	var tempTexture;
+    var kotou_billboard;
+
+    var shadowmapTexture;
+
+    function initTexture() {
+
+      environmentalTexture = loadCubeMap("taipei101/.jpg");//desert/.jpg ocean/.jpg
+      duckTexture.body = loadCubeMap("birdFury/body/.png");
+      duckTexture.head = loadCubeMap("birdFury/head/.png");
+      skyTexture = loadTexture("sky.png");
+      woodenTexture = loadTexture("crate.gif");
+      golddenTexture = loadTexture("gold_block.png");
+      crateTexture = loadTexture("crate.gif");
+      tempTexture = loadTexture("crate.png");
+      kotou_billboard = loadTexture("kotou.png");
+      screenTexture = setupWEBM_texture("Kyousougiga.webm");
+      initTextureFramebuffer();
+      shadowmapTexture = initShadowbufferObject(gl, 2048, 2048);
+
+
+      for (var mesh in meshes) {
+        for (var i=0; i<meshes[mesh].offset_list.length; ++i){
+          tex_index = meshes[mesh].offset_list[i].index;
+          if(!(meshes[mesh].materialsByIndex[tex_index].mapDiffuse)) continue;
+          meshes[mesh].texture_buffer[tex_index] = gl.createTexture();
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+          gl.bindTexture(gl.TEXTURE_2D, meshes[mesh].texture_buffer[tex_index]);
+
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, meshes[mesh].materialsByIndex[tex_index].mapDiffuse.texture);
+
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+          gl.generateMipmap(gl.TEXTURE_2D);
+
+          gl.bindTexture(gl.TEXTURE_2D, null);
+
+        }
+      }
+    }
+
+    var rttFramebuffer;
+    var rttTexture;
+
+    function initTextureFramebuffer() {
+        rttFramebuffer = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, rttFramebuffer);
+        rttFramebuffer.width = 512;
+        rttFramebuffer.height = 512;
+
+        rttTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, rttTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+        gl.generateMipmap(gl.TEXTURE_2D);
+
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, rttFramebuffer.width, rttFramebuffer.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+        var renderbuffer = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, renderbuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, rttFramebuffer.width, rttFramebuffer.height);
+
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rttTexture, 0);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, renderbuffer);
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function initLighting(){
+      for(var i=0; i<numLights; ++i){
+        light_sources[i] = {
+          direction: [0.0, 0.0, 1.0, 0.0],
+          position: [0.0, 0.0, 0.0, 1.0],
+
+          ambient: [0.3, 0.3, 0.3, 1.0],
+          diffuse: [0.0, 0.0, 0.0, 1.0],
+          specular: [0.8, 0.8, 0.8, 1.0],//defult no specular
+
+          spotCutOff:  degToRad(10.0),
+          spotExponent: 100.0,
+          constantAttenuation: 1.0,
+          linearAttenuation: 0.0,
+          quadraticAttenuation: 0.0,
+          enable: i == 0
+        };
+      }
+    }
+    function UpdateLighting(){
+      for(var i=0; i<numLights; ++i){
+        gl.uniform4fv(shaderProgram.lightsUniform[i].direction,
+          light_sources[i].direction);
+        gl.uniform4fv(shaderProgram.lightsUniform[i].position,
+          light_sources[i].position);
+
+        gl.uniform4fv(shaderProgram.lightsUniform[i].ambient,
+          light_sources[i].ambient);
+        gl.uniform4fv(shaderProgram.lightsUniform[i].diffuse,
+          light_sources[i].diffuse);
+        gl.uniform4fv(shaderProgram.lightsUniform[i].specular,
+          light_sources[i].specular);
+
+        gl.uniform1f(shaderProgram.lightsUniform[i].spotCutOff,
+          light_sources[i].spotCutOff);
+        gl.uniform1f(shaderProgram.lightsUniform[i].spotExponent,
+          light_sources[i].spotExponent);
+
+        gl.uniform1f(shaderProgram.lightsUniform[i].constantAttenuation,
+          light_sources[i].constantAttenuation);
+        gl.uniform1f(shaderProgram.lightsUniform[i].linearAttenuation,
+          light_sources[i].linearAttenuation);
+        gl.uniform1f(shaderProgram.lightsUniform[i].quadraticAttenuation,
+          light_sources[i].quadraticAttenuation);
+
+        gl.uniform1b(shaderProgram.lightsUniform[i].enable,
+          light_sources[i].enable);
+      }
+    }
+
+    var front_material;
+    function initMaterial(){
+      front_material = {
+        ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度
+        diffuse:[1.0, 1.0, 1.0, 1.0],//描述物體的曼反射
+        specular:[0.3, 0.3, 0.3, 1.0],//描述物體的鏡面反射
+        emission:[0.0, 0.0, 0.0, 1.0],//描述物體的自發光
+        shiness:255
+      };
+    }
+    function UpdateMaterial(objMaterial){
+      gl.uniform4fv(shaderProgram.FrontMaterialUniform.ambient,
+        objMaterial.ambient);
+      gl.uniform4fv(shaderProgram.FrontMaterialUniform.diffuse,
+        objMaterial.diffuse);
+      gl.uniform4fv(shaderProgram.FrontMaterialUniform.specular,
+        objMaterial.specular);
+      gl.uniform4fv(shaderProgram.FrontMaterialUniform.emission,
+        objMaterial.emission);
+      gl.uniform1f(shaderProgram.FrontMaterialUniform.shiness,
+        objMaterial.shiness);
+    }
+
+    var foggy_effect;
+    function initFog(){
+      foggy_effect = {
+        density:0.08,
+        color:[0.5, 0.5, 0.3, 1.0],
+        type:fogStructMembers.EnumType.none,
+        depthType:fogStructMembers.EnumDepthType.range_based
+      };
+    }
+    function UpdateFog(objFog){
+      gl.uniform1f(shaderProgram.FogDataUniform.density,
+        objFog.density);
+      gl.uniform4fv(shaderProgram.FogDataUniform.color,
+        objFog.color);
+      gl.uniform1i(shaderProgram.FogDataUniform.type,
+        objFog.type);
+      gl.uniform1i(shaderProgram.FogDataUniform.depthType,
+        objFog.depthType);
+    }
+
+    var TopMatrix;
+    var matrix_modes = ["view", "model", "projection", "texture", "color", "lightmodel"];
+    //定義特殊矩陣
+    var special_matrix_modes = {
+      "modelview":{
+        "get_matrix":function(){
+          var result = mat4.create();
+          mat4.multiply(TopMatrix("view"), TopMatrix("model"), result);
+          return result;
+        }
+      },
+      "modelviewprojection":{
+        "get_matrix":function(){
+          var result = mat4.create();
+          mat4.multiply(TopMatrix("projection"), TopMatrix("modelview"), result);
+          return result;
+        }
+      },
+      "normal":{
+        "get_matrix":function(){
+          var normalMatrix = mat3.create();
+          mat4.toInverseMat3(TopMatrix("modelview"), normalMatrix);
+          mat3.transpose(normalMatrix);
+          return normalMatrix;
+        }
+      },
+      "identity":{
+        "get_matrix":function(){
+          var result = mat4.create();
+          mat4.identity(result);
+          return result;
+        }
+      }
+    };
+    var Matries = [];
+
+    function initMatrix(){
+      //依序初始化所有矩陣堆疊
+      for(var i=0; i<matrix_modes.length; ++i){
+        Matries[matrix_modes[i]] = [mat4.create()];
+      }
+    }
+    TopMatrix = function(matrix_mode) {
+      if(special_matrix_modes[matrix_mode] &&
+        typeof special_matrix_modes[matrix_mode].get_matrix === "function"){
+          return special_matrix_modes[matrix_mode].get_matrix();
+      }
+        //只作用在矩陣堆疊的頂層
+      return Matries[matrix_mode][Matries[matrix_mode].length-1];
+    }
+    function PushMatrix(matrix_mode) {
+      //建立一個零矩陣來準備儲存矩陣
+      var copy = mat4.create();
+      //將堆疊頂層的矩陣複製一份
+      mat4.set(TopMatrix(matrix_mode), copy);
+      //再放進堆疊
+      Matries[matrix_mode].push(copy);
+    }
+
+    function PopMatrix(matrix_mode) {
+      if (Matries[matrix_mode].length == 0) {
+        throw "Invalid popMatrix!";
+      }
+      Matries[matrix_mode].pop();
+    }
+
+    function setMatrixUniforms() {
+      var org_shader = shader_inuse;
+      for(var i=0; i<shaderPrograms.length; ++i){
+        shader_inuse = i;
+        shaderProgram = shaderPrograms[shader_inuse];
+        gl.useProgram(shaderProgram);
+
+        gl.uniformMatrix4fv(shaderProgram.projectionMatrixUniform, false, TopMatrix("projection"));
+        gl.uniformMatrix4fv(shaderProgram.viewMatrixUniform, false, TopMatrix("view"));
+        gl.uniformMatrix4fv(shaderProgram.modelMatrixUniform, false, TopMatrix("model"));
+        gl.uniformMatrix3fv(shaderProgram.normalMatrixUniform, false, TopMatrix("normal"));
+        //尚未用到的矩陣
+        //gl.uniformMatrix4fv(shaderProgram.colorMatrixUniform, false, TopMatrix("color"));
+        //gl.uniformMatrix4fv(shaderProgram.textureMatrixUniform, false, TopMatrix("texture"));
+      }
+      shader_inuse = org_shader;
+      shaderProgram = shaderPrograms[shader_inuse];
+      gl.useProgram(shaderProgram);
+    }
+
+
+    function degToRad(degrees) {
+      return degrees * Math.PI / 180;
+    }
+
+    var viewHead = 0;
+    var viewRoll = 0;
+    var viewEpitch = 10;
+    var viewUppos = -5;
+    var viewRight = 0;
+    var viewZoom = 0;
+
+    var follow_duck = false;
+
+    var currentlyPressedKeys = {};
+
+    function handleKeyDown(event) {
+      currentlyPressedKeys[event.keyCode] = true;
+    }
+
+    function handleKeyUp(event) {
+      currentlyPressedKeys[event.keyCode] = false;
+      if (event.keyCode == 32) follow_duck = !follow_duck; //空白
+      if(follow_duck){
+         viewHead = 0;
+         viewRoll = 0;
+         viewEpitch = 0;
+         viewUppos = 0;
+         viewRight = 0;
+         viewZoom = 0;
+      }
+    }
+
+    function handleKeys() {
+      if (currentlyPressedKeys[83]) viewZoom += 0.5; //w
+      if (currentlyPressedKeys[87]) viewZoom -= 0.5; //s
+      if (currentlyPressedKeys[65]) viewRight -= 0.5; //a
+      if (currentlyPressedKeys[68]) viewRight += 0.5; //d
+      if (currentlyPressedKeys[90]) viewUppos += 0.5; //z
+      if (currentlyPressedKeys[88]) viewUppos -= 0.5; //x
+
+      if (currentlyPressedKeys[82]) viewEpitch += 0.5; //r
+      if (currentlyPressedKeys[70]) viewEpitch -= 0.5; //f
+      if (currentlyPressedKeys[84]) viewHead += 0.5; //t
+      if (currentlyPressedKeys[71]) viewHead -= 0.5; //g
+      if (currentlyPressedKeys[89]) viewRoll += 0.5; //y
+      if (currentlyPressedKeys[72]) viewRoll -= 0.5; //h
+
+      if (currentlyPressedKeys[81]){ //Q, 攝影機復位
+        viewHead = 0;
+        viewRoll = 0;
+        viewEpitch = 0;
+        viewUppos = 0;
+        viewRight = 0;
+        viewZoom = 0;
+      }
+    }
+
+    var tetrahedronVertexPositionBuffer;
+    var tetrahedronVertexColorBuffer;
+    var tetrahedronVertexNormalBuffer;
+    var tetrahedronVertexTextureCoordBuffer;
+    var tetrahedronVertexIndexBuffer;
+    var cubeVertexPositionBuffer;
+    var cubeVertexColorBuffer;
+    var cubeVertexNormalBuffer;
+    var cubeVertexTextureCoordBuffer;
+    var cubeVertexIndexBuffer;
+
+    var mirrorVertexPositionBuffer;
+    var mirrorVertexColorBuffer;
+    var mirrorVertexNormalBuffer;
+
+    var mirrorVertexIndexBuffer;
+
+    var screenVertexPositionBuffer;
+
+    var billboardBuffer = {};
+
+    function initBuffers() {
+      tetrahedronVertexPositionBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexPositionBuffer);
+      var vertices = [
+        // 1 face
+        1.0,  1.0,  1.0,
+        1.0, -1.0,  -1.0,
+        -1.0, 1.0,  -1.0,
+
+        // 2 face
+        1.0,  1.0,  1.0,
+        -1.0, 1.0, -1.0,
+		    -1.0, -1.0,  1.0,
+
+        // 3 face
+        -1.0,  1.0,  -1.0,
+        1.0, -1.0, -1.0,
+        -1.0, -1.0, 1.0,
+
+        // 4 face
+        1.0,  1.0,  1.0,
+        -1.0, -1.0, 1.0,
+        1.0, -1.0,  -1.0
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      tetrahedronVertexPositionBuffer.itemSize = 3;
+      tetrahedronVertexPositionBuffer.numItems = 12;
+
+      tetrahedronVertexColorBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexColorBuffer);
+      var colors = [
+        // 1 face
+        1.0, 0.0, 0.0, 1.0,
+        0.0, 1.0, 0.0, 1.0,
+        0.0, 0.0, 1.0, 1.0,
+
+        // 2 face
+        1.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0, 1.0,
+        0.0, 1.0, 0.0, 1.0,
+
+        // 3 face
+        1.0, 1.0, 0.0, 1.0,
+        1.0, 1.0, 0.0, 1.0,
+        1.0, 1.0, 0.0, 1.0,
+
+        // 4 face
+        1.0, 1.0, 0.0, 1.0,
+        1.0, 1.0, 0.0, 1.0,
+        1.0, 1.0, 0.0, 1.0
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+      tetrahedronVertexColorBuffer.itemSize = 4;
+      tetrahedronVertexColorBuffer.numItems = 12;
+
+      tetrahedronVertexNormalBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexNormalBuffer);
+      var vertexNormals = [
+          // 1 face
+           0.5774,  0.5774,  -0.5774,
+           0.5774,  0.5774,  -0.5774,
+           0.5774,  0.5774,  -0.5774,
+
+          //2 face
+           -0.5774,  0.5774,  0.5774,
+           -0.5774,  0.5774,  0.5774,
+           -0.5774,  0.5774,  0.5774,
+
+          //3 face
+           -0.5774,  -0.5774,  -0.5774,
+           -0.5774,  -0.5774,  -0.5774,
+           -0.5774,  -0.5774,  -0.5774,
+
+          //4 face
+           0.5774,  -0.5774,  0.5774,
+           0.5774,  -0.5774,  0.5774,
+           0.5774,  -0.5774,  0.5774,
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals), gl.STATIC_DRAW);
+      tetrahedronVertexNormalBuffer.itemSize = 3;
+      tetrahedronVertexNormalBuffer.numItems = 12;
+
+      tetrahedronVertexTextureCoordBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexTextureCoordBuffer);
+      var textureCoords = [
+          // 1 face
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+
+          // 2 face
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+          0.0, 0.5, 0.0,
+
+          // 3 face
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+
+          // 4 face
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+      tetrahedronVertexTextureCoordBuffer.itemSize = 3;
+      tetrahedronVertexTextureCoordBuffer.numItems = 12;
+
+      tetrahedronVertexIndexBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, tetrahedronVertexIndexBuffer);
+      var tetrahedronVertexIndices = [
+        0, 1, 2, // Front face
+        3, 4, 5, // Back face
+        6, 7, 8,// Top face
+        9, 10, 11,  // Bottom face
+      ];
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(tetrahedronVertexIndices), gl.STATIC_DRAW);
+      tetrahedronVertexIndexBuffer.itemSize = 1;
+      tetrahedronVertexIndexBuffer.numItems = 12;
+
+      cubeVertexPositionBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+      vertices = [
+        // Front face
+        -1.0, -1.0,  1.0,
+        1.0, -1.0,  1.0,
+        1.0,  1.0,  1.0,
+        -1.0,  1.0,  1.0,
+
+        // Back face
+        -1.0, -1.0, -1.0,
+        -1.0,  1.0, -1.0,
+        1.0,  1.0, -1.0,
+        1.0, -1.0, -1.0,
+
+        // Top face
+        -1.0,  1.0, -1.0,
+        -1.0,  1.0,  1.0,
+        1.0,  1.0,  1.0,
+        1.0,  1.0, -1.0,
+
+        // Bottom face
+        -1.0, -1.0, -1.0,
+        1.0, -1.0, -1.0,
+        1.0, -1.0,  1.0,
+        -1.0, -1.0,  1.0,
+
+        // Right face
+        1.0, -1.0, -1.0,
+        1.0,  1.0, -1.0,
+        1.0,  1.0,  1.0,
+        1.0, -1.0,  1.0,
+
+        // Left face
+        -1.0, -1.0, -1.0,
+        -1.0, -1.0,  1.0,
+        -1.0,  1.0,  1.0,
+        -1.0,  1.0, -1.0
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      cubeVertexPositionBuffer.itemSize = 3;
+      cubeVertexPositionBuffer.numItems = 24;
+
+      tanoshiBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tanoshiBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      tanoshiBuffer.itemSize = 1;
+      tanoshiBuffer.numItems = 72;
+
+      cubeVertexColorBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexColorBuffer);
+      colors = [
+        [0.0, 1.0, 1.0, 1.0], // Front face
+        [0.0, 1.0, 1.0, 1.0], // Back face
+        [0.0, 1.0, 0.0, 1.0], // Top face
+        [0.0, 0.0, 1.0, 1.0], // Bottom face
+        [0.0, 1.0, 0.0, 1.0], // Right face
+        [0.0, 1.0, 0.0, 1.0]  // Left face
+      ];
+      var unpackedColors = [];
+      for (var i in colors) {
+        var color = colors[i];
+        for (var j=0; j < 4; j++) {
+          unpackedColors = unpackedColors.concat(color);
+        }
+      }
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(unpackedColors), gl.STATIC_DRAW);
+      cubeVertexColorBuffer.itemSize = 4;
+      cubeVertexColorBuffer.numItems = 24;
+
+      cubeVertexNormalBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+      var vertexNormals = [
+          // Front face
+           0.0,  0.0,  1.0,
+           0.0,  0.0,  1.0,
+           0.0,  0.0,  1.0,
+           0.0,  0.0,  1.0,
+
+          // Back face
+           0.0,  0.0, -1.0,
+           0.0,  0.0, -1.0,
+           0.0,  0.0, -1.0,
+           0.0,  0.0, -1.0,
+
+          // Top face
+           0.0,  1.0,  0.0,
+           0.0,  1.0,  0.0,
+           0.0,  1.0,  0.0,
+           0.0,  1.0,  0.0,
+
+          // Bottom face
+           0.0, -1.0,  0.0,
+           0.0, -1.0,  0.0,
+           0.0, -1.0,  0.0,
+           0.0, -1.0,  0.0,
+
+          // Right face
+           1.0,  0.0,  0.0,
+           1.0,  0.0,  0.0,
+           1.0,  0.0,  0.0,
+           1.0,  0.0,  0.0,
+
+          // Left face
+          -1.0,  0.0,  0.0,
+          -1.0,  0.0,  0.0,
+          -1.0,  0.0,  0.0,
+          -1.0,  0.0,  0.0,
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals), gl.STATIC_DRAW);
+      cubeVertexNormalBuffer.itemSize = 3;
+      cubeVertexNormalBuffer.numItems = 24;
+
+      cubeVertexTextureCoordBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+      var textureCoords = [
+          // Front face
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+          0.0, 1.0, 0.0,
+
+          // Back face
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0,
+
+          // Top face
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+
+          // Bottom face
+          1.0, 1.0, 0.0,
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+
+          // Right face
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0,
+
+          // Left face
+          0.0, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+          1.0, 1.0, 0.0,
+          0.0, 1.0, 0.0,
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+      cubeVertexTextureCoordBuffer.itemSize = 3;
+      cubeVertexTextureCoordBuffer.numItems = 24;
+
+      cubeVertexIndexBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+      var cubeVertexIndices = [
+        0, 1, 2,      0, 2, 3,    // Front face
+        4, 5, 6,      4, 6, 7,    // Back face
+        8, 9, 10,     8, 10, 11,  // Top face
+        12, 13, 14,   12, 14, 15, // Bottom face
+        16, 17, 18,   16, 18, 19, // Right face
+        20, 21, 22,   20, 22, 23  // Left face
+      ];
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(cubeVertexIndices), gl.STATIC_DRAW);
+      cubeVertexIndexBuffer.itemSize = 1;
+      cubeVertexIndexBuffer.numItems = 36;
+
+      mirrorVertexPositionBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexPositionBuffer);
+      vertices = [
+        // Back face
+        -1.0, -1.0, -1.0,
+        -1.0,  1.0, -1.0,
+        1.0,  1.0, -1.0,
+        1.0, -1.0, -1.0,
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      mirrorVertexPositionBuffer.itemSize = 3;
+      mirrorVertexPositionBuffer.numItems = 4;
+
+      mirrorVertexColorBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexColorBuffer);
+      colors = [
+        1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0,
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+      mirrorVertexColorBuffer.itemSize = 4;
+      mirrorVertexColorBuffer.numItems = 4;
+
+      mirrorVertexNormalBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexNormalBuffer);
+      var vertexNormals = [
+
+        // Back face
+        0.0,  0.0, -1.0,
+        0.0,  0.0, -1.0,
+        0.0,  0.0, -1.0,
+        0.0,  0.0, -1.0,
+
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals), gl.STATIC_DRAW);
+      mirrorVertexNormalBuffer.itemSize = 3;
+      mirrorVertexNormalBuffer.numItems = 4;
+
+      screenVertexPositionBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, screenVertexPositionBuffer);
+      var vertexPosition = [
+        -1.9, 2, 0.15,
+        1.7, 2, 0.15,
+        1.7,  4.2, -0.21,
+        -1.9,  4.2, -0.21,
+
+      ];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+      screenVertexPositionBuffer.itemSize = 3;
+      screenVertexPositionBuffer.numItems = 4;
+
+      mirrorVertexIndexBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mirrorVertexIndexBuffer);
+      var mirrorVertexIndices = [
+        0, 1, 2,      0, 2, 3,
+        2, 1, 0,      3, 2, 0
+      ];
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(mirrorVertexIndices), gl.STATIC_DRAW);
+      mirrorVertexIndexBuffer.itemSize = 1;
+      mirrorVertexIndexBuffer.numItems = 12;
+
+
+      var layout = new OBJ.Layout(
+        OBJ.Layout.POSITION,
+        OBJ.Layout.UV,
+        OBJ.Layout.NORMAL,
+        OBJ.Layout.DIFFUSE,
+        OBJ.Layout.SPECULAR,
+        OBJ.Layout.SPECULAR_EXPONENT
+      );
+      for (var mesh in meshes) {
+        var vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        var vertexData = meshes[mesh].makeBufferData(layout);
+        console.log(vertexData);
+        gl.bufferData(gl.ARRAY_BUFFER, vertexData, gl.STATIC_DRAW);
+
+        vertexBuffer.numItems = vertexData.numItems;
+        vertexBuffer.layout = layout;
+        meshes[mesh].vertexBuffer = vertexBuffer;
+
+        var old_matdata = -1;
+        var offset_list = [];
+        meshes[mesh].texture_buffer = [];
+        var i=0;
+
+        for(i=0; i<meshes[mesh].indices.length; i+=3){
+          var new_index = meshes[mesh].indices[i];
+
+          if(offset_list.length > 0)offset_list[offset_list.length-1].count+=3;
+          if(meshes[mesh].vertexMaterialIndices[new_index] != old_matdata){
+            offset_list.push({offset:i,count:0,index:meshes[mesh].vertexMaterialIndices[new_index]});
+            old_matdata = meshes[mesh].vertexMaterialIndices[new_index];
+          }
+
+        }
+        meshes[mesh].offset_list = offset_list;
+        var indexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+        var indexData = meshes[mesh].makeIndexBufferData();
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexData, gl.STATIC_DRAW);
+        indexBuffer.numItems = indexData.numItems;
+        meshes[mesh].indexBuffer = indexBuffer;
+
+        models[mesh] = {};
+        models[mesh].mesh = meshes[mesh];
+      }
+
+      billboardBuffer = {
+        VertexPosition: gl.createBuffer(),
+        Normal: gl.createBuffer(),
+        TextureCoord: gl.createBuffer(),
+        VertexIndex: gl.createBuffer(),
+      };
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.VertexPosition);
+      billboardBuffer.VertexPosition.data = [
+        -1.0, -1.0,  1.0,
+        1.0, -1.0,  1.0,
+        1.0,  1.0,  1.0,
+        -1.0,  1.0,  1.0,
+      ];
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array(billboardBuffer.VertexPosition.data),
+        gl.STATIC_DRAW
+      );
+      billboardBuffer.VertexPosition.itemSize = 3;
+      billboardBuffer.VertexPosition.numItems = 4;
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.Normal);
+      billboardBuffer.Normal.data = [
+        0.0, 0.0,  1.0,
+        0.0, 0.0,  1.0,
+        0.0, 0.0,  1.0,
+        0.0, 0.0,  1.0
+      ];
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array(billboardBuffer.Normal.data),
+        gl.STATIC_DRAW
+      );
+      billboardBuffer.Normal.itemSize = 3;
+      billboardBuffer.Normal.numItems = 4;
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.TextureCoord);
+      billboardBuffer.TextureCoord.data = [
+        0.0, 0.0, 0.0,
+        1.0, 0.0, 0.0,
+        1.0, 1.0, 0.0,
+        0.0, 1.0, 0.0
+      ];
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array(billboardBuffer.TextureCoord.data),
+        gl.STATIC_DRAW
+      );
+      billboardBuffer.TextureCoord.itemSize = 3;
+      billboardBuffer.TextureCoord.numItems = 4;
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, billboardBuffer.VertexIndex);
+      billboardBuffer.VertexIndex.data = [
+        0, 1, 2,      0, 2, 3,    // Front face
+      ]
+      gl.bufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        new Uint16Array(billboardBuffer.VertexIndex.data),
+        gl.STATIC_DRAW
+      );
+      billboardBuffer.VertexIndex.itemSize = 1;
+      billboardBuffer.VertexIndex.numItems = 6;
+
+      //Matrix Stack也可以算是Buffer的一種
+      initMatrix();
+    }
+
+    function updateBillboard(waxis){
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.VertexPosition);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array(billboardBuffer.VertexPosition.data),
+        gl.STATIC_DRAW
+      );
+      billboardBuffer.VertexPosition.itemSize = 3;
+      billboardBuffer.VertexPosition.numItems = 4;
+
+      var waxis_arr=[];
+      for(var i=0; i<4; ++i)waxis_arr = waxis_arr.concat(waxis);
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.Normal);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array(waxis_arr),
+        gl.STATIC_DRAW
+      );
+      billboardBuffer.Normal.itemSize = 3;
+      billboardBuffer.Normal.numItems = 4;
+    }
+    function get_vec(vecArray){
+      vecArray.x = vecArray[0];
+      vecArray.y = vecArray[1];
+      vecArray.z = vecArray[2];
+      vecArray.w = vecArray[3];
+      return vecArray;
+    }
+    function get_w(){
+      var result = mat4.create();
+      var model_view_matrix = mat4.create();
+      //mat4.inverse(TopMatrix("model"), result);
+      mat4.multiply(TopMatrix("view"), TopMatrix("model"), model_view_matrix);
+      //Column-Major
+      //0  4  8  12 <- u axis vector
+      //1  5  9  13 <- v axis vector
+      //2  6  10 14 <- w axis vector
+      //3  7  11 15 <- homogeneous vector
+      return get_vec([
+        model_view_matrix[2],
+        model_view_matrix[6],
+        model_view_matrix[10],
+        model_view_matrix[14]
+      ]);
+    }
+    function get_x(matrix){
+      return get_vec([matrix[0], matrix[4], matrix[8], matrix[12]]);
+    }
+    function get_y(matrix){
+      return get_vec([matrix[1], matrix[5], matrix[9], matrix[13]]);
+    }
+    function vecNormalize(vec){
+      var vecLength = Math.sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
+      vec.x = (vecLength <= 0.00001) ? 0 : vec.x / vecLength;
+      vec.y = (vecLength <= 0.00001) ? 0 : vec.y / vecLength;
+      vec.z = (vecLength <= 0.00001) ? 0 : vec.z / vecLength;
+      return vec;
+    }
+    function drawBillboard(pos,w,h,method,alpha,blend_flag) {
+      var w_axis = get_w();
+      var Billboard_x = vecNormalize(get_vec([ w_axis.z, 0.0, -w_axis.x, 0.0]));
+
+      var model_view_matrix = mat4.create();
+      //mat4.inverse(TopMatrix("model"), result);
+      mat4.multiply(TopMatrix("view"), TopMatrix("model"), model_view_matrix);
+      var y_axis = get_vec([0.0, 1.0, 0.0]);
+      if(method == 1){
+        Billboard_x = get_x(model_view_matrix);
+        y_axis = get_y(model_view_matrix);
+      }
+
+      pos = get_vec(pos);
+      var v0 = get_vec([
+        pos.x - (w * Billboard_x.x / 2.0),
+        pos.y - (w * Billboard_x.y / 2.0),
+        pos.z - (w * Billboard_x.z / 2.0),
+      1.0]);
+      var v1 = get_vec([
+        pos.x + (w * Billboard_x.x / 2.0),
+        pos.y + (w * Billboard_x.y / 2.0),
+        pos.z + (w * Billboard_x.z / 2.0),
+      1.0]);
+      billboardBuffer.VertexPosition.data = [
+          v0.x, v0.y, v0.z,
+          v1.x, v1.y, v1.z,
+          v1.x + y_axis.x * h, v1.y + y_axis.y * h, v1.z + y_axis.z * h,
+          v0.x + y_axis.x * h, v0.y + y_axis.y * h, v0.z + y_axis.z * h,
+      ];
+
+      updateBillboard(w_axis);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.VertexPosition);
+      gl.vertexAttribPointer(
+        shaderProgram.vertexPositionAttribute,
+        billboardBuffer.VertexPosition.itemSize,
+        gl.FLOAT, false, 0, 0
+      );
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.Normal);
+      gl.vertexAttribPointer(
+        shaderProgram.vertexNormalAttribute,
+        billboardBuffer.Normal.itemSize,
+        gl.FLOAT, false, 0, 0
+      );
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, billboardBuffer.TextureCoord);
+      gl.vertexAttribPointer(
+        shaderProgram.vertexTextureCoordAttribute,
+        billboardBuffer.TextureCoord.itemSize,
+        gl.FLOAT, false, 0, 0
+      );
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexColorBuffer);
+			gl.vertexAttribPointer(
+        shaderProgram.vertexColorAttribute,
+        cubeVertexColorBuffer.itemSize,
+        gl.FLOAT, false, 0, 0
+      );
+
+
+      //gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+			//gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+    //  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+    //  gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      //gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+    //  gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, cubeVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+		//	gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexColorBuffer);
+		//	gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, cubeVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      if(blend_flag != true)gl.enable(gl.BLEND);
+      gl.uniform1f(shaderProgram.alphaUniform, typeof alpha !== "undefined" ? alpha : 0.8);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, billboardBuffer.VertexIndex);
+      gl.drawElements(
+        gl.TRIANGLES,
+        billboardBuffer.VertexIndex.numItems,
+        gl.UNSIGNED_SHORT, 0
+      );
+      gl.uniform1f(shaderProgram.alphaUniform, 1.0);
+      if(blend_flag != true)gl.disable(gl.BLEND);
+    }
+
+    function mirror( val )
+    {
+      return [
+        // Back face
+        -val, -val, -1.0,
+        -val,  val, -1.0,
+        val,  val, -1.0,
+        val, -val, -1.0,
+        //-val, -1.0,-val,
+        //-val, -1.0, val,
+        // val, -1.0, val,
+        // val, -1.0,-val,
+      ];
+    }
+
+    function drawTetrahedron(){
+      PushMatrix("model");
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, tetrahedronVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexColorBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, tetrahedronVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, tetrahedronVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, tetrahedronVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, tetrahedronVertexIndexBuffer);
+
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, tetrahedronVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+      PopMatrix("model");
+    }
+
+    function drawCube(texture_coordinate){
+      var sampler_data = (!!texture_coordinate) ? texture_coordinate : cubeVertexTextureCoordBuffer;
+      PushMatrix("model");
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexColorBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, cubeVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, cubeVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, sampler_data);
+        gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, cubeVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+      PopMatrix("model");
+    }
+
+    function drawFloor(normal_shader, obj_shader){
+      shader_inuse = normal_shader;//objShader
+      gl.useProgram(shaderPrograms[shader_inuse]);
+      shaderProgram = shaderPrograms[shader_inuse];
+      PushMatrix("model");
+
+        mat4.translate(TopMatrix("model"), [0.0, -1.2, 0.0]);
+        mat4.rotate(TopMatrix("model"), degToRad(90), [1, 0, 0]);
+        mat4.scale(TopMatrix("model"), [15.0,15.0,0.1]);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, tetrahedronVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexColorBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, tetrahedronVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, tetrahedronVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, tetrahedronVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, tetrahedronVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, tetrahedronVertexIndexBuffer);
+
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, tetrahedronVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexColorBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, cubeVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, cubeVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+      PopMatrix("model");
+    }
+
+    function setTexture(texture, cubeTexture, animalCubeTexture, enableBool, animalCubeEnable)
+    {
+      var org_shader = shader_inuse;
+      for(var i=0; i<shaderPrograms.length; ++i){
+        shader_inuse = i;
+        shaderProgram = shaderPrograms[shader_inuse];
+        gl.useProgram(shaderProgram);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, cubeTexture);
+        gl.uniform1i(shaderProgram.samplerCubeUniform, 1);
+
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, animalCubeTexture);
+        gl.uniform1i(shaderProgram.samplerPigUniform, 2);
+
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, shadowmapTexture.texture);
+        gl.uniform1i(shaderProgram.shadowSamplerUniform, 3);
+
+        gl.uniform1b(shaderProgram.enableTextureUniform, enableBool);
+        gl.uniform1b(shaderProgram.boolPigBodyUniform, animalCubeEnable);
+      }
+      shader_inuse = org_shader;
+      shaderProgram = shaderPrograms[shader_inuse];
+      gl.useProgram(shaderProgram);
+    }
+
+    var ducksArray = [];
+
+    function initWorldObj(normal_shader, obj_shader){
+      var numDuck = 30;
+      var duck_size;
+      var duck_facing;
+      for(var i=0; i<numDuck ;i++)
+      {
+        duck_size = Math.random();
+        duck_facing = Math.random() * 360;
+        while(duck_size < 0.3){duck_size = Math.random();} //鴨子大小介於0.3 ~ 1.0
+        ducksArray[i] = new duck(duck_size, duck_facing, normal_shader, obj_shader);
+      }
+    }
+
+    var duck = function(duck_size, duck_facing, normal_shader, obj_shader) {
+      this.facing = duck_facing;
+      this.speed = 1;
+      this.location = [0, 0, 0];
+      this.willchange = 0;
+      this.size = [duck_size, duck_size, duck_size];
+      this.draw(normal_shader, obj_shader);
+    };
+
+    duck.prototype.move = function(time_dur) {
+      this.willchange = this.willchange - 1;
+      if(this.willchange <= 0){
+        this.willchange = Math.random() * 100;
+        this.facing += Math.random() * 360 - 180;
+        this.speed += Math.random() * 2 - 1;
+        //角度範圍0 ~ 360
+        if(this.facing >= 360)this.facing -= 360;
+        if(this.facing <= 0)this.facing += 360;
+        //速度負的重取
+        if(this.speed <= 0)this.speed= Math.random() * 5;
+      }
+
+      var loc_diff = [0.0, 0.0, 0.0, 1.0];
+      var t;
+      var loc_mat = mat4.create();
+      mat4.identity(loc_mat);
+      mat4.rotate(loc_mat,degToRad(this.facing), [0.0, 1.0, 0.0]);
+      mat4.translate(loc_mat, [-this.speed * time_dur, 0.0, 0.0]);
+      mat4.multiplyVec4(loc_mat, loc_diff, loc_diff);
+      this.location[0] += loc_diff[0];
+      this.location[1] += loc_diff[1];
+      this.location[2] += loc_diff[2];
+
+    };
+
+    duck.prototype.draw = function(normal_shader, obj_shader) {
+      PushMatrix("model");
+        mat4.translate(TopMatrix("model"), this.location);
+        mat4.rotate(TopMatrix("model"),degToRad(this.facing), [0.0, 1.0, 0.0]);
+        mat4.scale(TopMatrix("model"), this.size);
+
+        drawMalformedDuck(normal_shader, obj_shader);
+      PopMatrix("model");
+    };
+
+
+    function drawMalformedDuck(normal_shader, obj_shader){
+      shader_inuse = normal_shader;//objShader
+      gl.useProgram(shaderPrograms[shader_inuse]);
+      shaderProgram = shaderPrograms[shader_inuse];
+      //設定頭部旋轉軸
+      var walk_cycle = Math.sin(degToRad(rCube*6.3))*22.5;
+      var head_cycle = Math.sin(degToRad(rCube*3.3))*22.5;
+
+      PushMatrix("model");
+        //Body
+        mat4.translate(TopMatrix("model"), [0.0, 1.5, 0.0]);
+        PushMatrix("model");
+          mat4.scale(TopMatrix("model"), [1.0,1.0,1.0]);
+          setTexture( null, null, duckTexture.body, true, true);
+          drawCube(cubeVertexPositionBuffer);
+        PopMatrix("model");
+
+        //head
+        mat4.translate(TopMatrix("model"), [-1.0, 1.5, 0.0]);
+        PushMatrix("model");
+          mat4.scale(TopMatrix("model"), [0.7,0.7,0.7]);
+          mat4.rotate(TopMatrix("model"), degToRad(head_cycle*0.6), [0, 0, 1]);
+          mat4.rotate(TopMatrix("model"),degToRad(270), [0.0, 1.0, 0.0]);
+          setTexture( null, null, duckTexture.head, true, true);
+          drawCube(cubeVertexPositionBuffer);
+
+          //mouth
+          mat4.rotate(TopMatrix("model"),degToRad(-270), [0.0, 1.0, 0.0]);
+          mat4.translate(TopMatrix("model"), [-1.0, -0.5, 0.0]);
+          PushMatrix("model");
+            mat4.rotate(TopMatrix("model"),degToRad(45), [0.0, 1.0, 0.0]);
+            mat4.scale(TopMatrix("model"), [0.5,0.5,0.5]);
+            drawTetrahedron();
+          PopMatrix("model");
+
+          //left eye
+          mat4.translate(TopMatrix("model"), [-0.01, 1.0, 0.0]);
+          PushMatrix("model");
+            mat4.translate(TopMatrix("model"), [0.0, 0.0, 0.5]);
+
+            var draw_eye = function(){
+              mat4.rotate(TopMatrix("model"),degToRad(-90), [0.0, 0.0, 1.0]);
+              mat4.scale(TopMatrix("model"), [0.2,0.2,0.2]);
+              setTexture(null, null, null, false, false);
+              drawCube();
+            }
+            //draw_eye();
+          PopMatrix("model");
+
+          //right eye
+          PushMatrix("model");
+            mat4.translate(TopMatrix("model"), [0.0, 0.0, -0.5]);
+            //draw_eye();
+          PopMatrix("model");
+        PopMatrix("model");
+
+        //wing
+        mat4.translate(TopMatrix("model"), [1.0, -0.5, 0.0]);
+        PushMatrix("model");
+          mat4.rotate(TopMatrix("model"), -degToRad(walk_cycle), [1, 0, 0]);
+
+          mat4.translate(TopMatrix("model"), [0.0, -1.0, 1.5]);
+          mat4.rotate(TopMatrix("model"), degToRad(-45), [1, 0, 0]);
+          mat4.scale(TopMatrix("model"), [0.8,0.8,0.1]);
+          setTexture( null, null, duckTexture.body, true, true);
+          drawCube(cubeVertexPositionBuffer);
+        PopMatrix("model");
+
+        //wing
+        PushMatrix("model");
+          mat4.rotate(TopMatrix("model"), degToRad(walk_cycle), [1, 0, 0]);
+
+          mat4.translate(TopMatrix("model"), [0.0, -1.0, -1.5]);
+          mat4.rotate(TopMatrix("model"), degToRad(45), [1, 0, 0]);
+          mat4.scale(TopMatrix("model"), [0.8,0.8,0.1]);
+          setTexture( null, null, duckTexture.body, true, true);
+          drawCube(cubeVertexPositionBuffer);
+        PopMatrix("model");
+
+        //leg
+        mat4.translate(TopMatrix("model"), [-0.1, -2.0, 0.0]);
+        PushMatrix("model");
+          mat4.translate(TopMatrix("model"), [0.0, 0.0, 1.0]);
+
+          //改變旋轉中心的旋轉
+          mat4.translate(TopMatrix("model"), [-(0.0), -(-0.9), -(0.0)]);
+          mat4.rotate(TopMatrix("model"), degToRad(walk_cycle), [0, 0, 1]);
+          mat4.translate(TopMatrix("model"), [+(0.0), +(-0.9), +(0.0)]);
+
+          var draw_leg = function(){
+            mat4.translate(TopMatrix("model"), [0.0, -0.5, 0.0]);
+            mat4.scale(TopMatrix("model"), [0.2,1.0,0.2]);
+            setTexture(null, null, null, false, false);
+            drawCube();
+          }
+          draw_leg();
+        PopMatrix("model");
+
+        //leg
+        PushMatrix("model");
+          mat4.translate(TopMatrix("model"), [0.0, 0.0, -1.0]);
+
+          //改變旋轉中心的旋轉
+          mat4.translate(TopMatrix("model"), [-(0.0), -(-0.9), -(0.0)]);
+          mat4.rotate(TopMatrix("model"), -degToRad(walk_cycle), [0, 0, 1]);
+          mat4.translate(TopMatrix("model"), [+(0.0), +(-0.9), +(0.0)]);
+
+          draw_leg();
+        PopMatrix("model");
+
+        //tail
+        mat4.translate(TopMatrix("model"), [1.0, 1.0, 0.0]);
+        PushMatrix("model");
+          mat4.scale(TopMatrix("model"), [0.4,0.4,0.4]);
+          mat4.rotate(TopMatrix("model"), degToRad(45), [0, 1, 0]);
+          drawTetrahedron();
+        PopMatrix("model");
+
+      PopMatrix("model");
+    }
+
+    function drawObjModel(ObjModel, shader_id){
+       PushMatrix("model");
+       gl.bindBuffer(gl.ARRAY_BUFFER, ObjModel.mesh.vertexBuffer);
+
+       for(var i=0; i<shaderPrograms.length; ++i){
+         shader_inuse = i;
+         shaderProgram = shaderPrograms[shader_inuse];
+         gl.useProgram(shaderProgram);
+         shaderProgram.applyAttributePointers(ObjModel);
+       }
+
+       shader_inuse = shader_id;
+       shaderProgram = shaderPrograms[shader_inuse];
+       gl.useProgram(shaderProgram);
+
+       UpdateMaterial({
+         ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度
+         diffuse:[0.0, 0.0, 0.0, 0.0],//描述物體的曼反射
+         specular:[0.0, 0.0, 0.0, 0.0],//描述物體的鏡面反射
+         emission:[0.0, 0.0, 0.0, 0.0],//描述物體的自發光
+         shiness:0.0
+       })
+       for (var i=0; i< ObjModel.mesh.offset_list.length ; ++i){
+
+         gl.activeTexture(gl.TEXTURE0);
+         gl.bindTexture(gl.TEXTURE_2D, ObjModel.mesh.texture_buffer[ObjModel.mesh.offset_list[i].index]);
+         gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ObjModel.mesh.indexBuffer);
+         setMatrixUniforms();
+         gl.drawElements(
+           gl.TRIANGLES,
+           ObjModel.mesh.offset_list[i].count,
+           gl.UNSIGNED_SHORT,
+           ObjModel.mesh.offset_list[i].offset * 2
+         );
+       }
+       PopMatrix("model");
+     }
+
+    var rPyramid = 0;
+    var rCube = 0;
+
+    function drawScene(has_foggy, normal_shader, obj_shader) {
+
+      shader_inuse = normal_shader;//objShader
+      gl.useProgram(shaderPrograms[shader_inuse]);
+      shaderProgram = shaderPrograms[shader_inuse];
+
+      light_sources[0] = {
+        direction: [-1.0, -1.0, 0.0, 0.0],
+        position: [0.0, 0.0, 0.0, 0.0],
+
+        ambient: [0.3, 0.3, 0.3, 1.0],
+        diffuse: [0.9, 0.9, 0.9, 1.0],
+        specular: [0.8, 0.8, 0.8, 1.0],//defult no specular
+
+        spotCutOff:  degToRad(180.0),
+        spotExponent: 0.0,
+        constantAttenuation: 1.0,
+        linearAttenuation: 0.0,
+        quadraticAttenuation: 0.0,
+        enable: document.getElementById("uLight0").checked
+      };
+
+      light_sources[1] = {
+        direction: [0.0, 0.0, 0.0, 0.0],
+        position: [
+          0+ducksArray[0].location[0],
+          2+ducksArray[0].location[1]+ducksArray[0].size[0]+1,
+          -40+ducksArray[0].location[2], 1.0],
+
+        ambient: [0.3, 0.3, 0.3, 1.0],
+        diffuse: [0.7, 0.1, 0.1, 1.0],
+        specular: [0.8, 0.1, 0.1, 1.0],//defult no specular
+
+        spotCutOff:  degToRad(180.0),
+        spotExponent: 0.0,
+        constantAttenuation: 1.0,
+        linearAttenuation: 0.0,
+        quadraticAttenuation: 0.0,
+        enable: document.getElementById("uLight1").checked
+      };
+
+      front_material = {
+        ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度，螢幕原來為黑色的
+        diffuse:[1.0, 1.0, 1.0, 1.0],//描述物體的漫反射，螢幕原來為黑色的
+        specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射，有螢幕效果
+        emission:[1.5, 1.5, 1.5, 1.0],//描述物體的自發光，有自發光才會看到螢幕上的畫面
+        shiness:20
+      };
+
+      foggy_effect = {
+        density:0.02,
+        color:[0.5, 0.5, 0.5, 1.0],
+        type:has_foggy?fogStructMembers.EnumType.exponential_square:fogStructMembers.EnumType.none,
+        depthType:fogStructMembers.EnumDepthType.range_based
+      };
+      for(var i=0; i<shaderPrograms.length; ++i){
+        shader_inuse = i;
+        shaderProgram = shaderPrograms[shader_inuse];
+        gl.useProgram(shaderProgram);
+        UpdateLighting();
+        UpdateMaterial(front_material);
+        UpdateFog(foggy_effect);
+        gl.uniform1b(shaderProgram.useLightingUniform, true);
+      }
+      //眼睛位於原點，往-z軸方向看
+
+      //mat4.identity(TopMatrix("model"));
+      mat4.translate(TopMatrix("model"), [0.0, 2.0, -40.0]);
+
+      PushMatrix("model");
+        //mat4.rotate(TopMatrix("model"), degToRad(rCube*.75), [0, 1, 0]);
+        //mat4.translate(TopMatrix("model"), [30.0, 0.0, 0.0]);
+        shader_inuse = normal_shader;
+        shaderProgram = shaderPrograms[shader_inuse];
+        gl.useProgram(shaderProgram);
+        //mat4.rotate(TopMatrix("model"), degToRad(180), [0, 1, 0]);
+        setTexture(kotou_billboard, null, null, true, false);
+        front_material = {
+          ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度
+          diffuse:[1.0, 1.0, 1.0, 1.0],//描述物體的漫反射
+          specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射
+          emission:[0.0, 0.0, 0.0, 1.0],//描述物體的自發光
+          shiness:20
+        };
+        UpdateMaterial(front_material);
+        drawBillboard([-20.0, 0.0, 0.0],
+        8,10,1,0.99,true);
+      PopMatrix("model");
+
+      if(document.getElementById("openObj").checked){
+        PushMatrix("model");
+          if(document.getElementById("uMacRotate").checked) mat4.rotate(TopMatrix("model"), degToRad(rCube*.95), [0, 1, 0]);
+          mat4.translate(TopMatrix("model"), [0.0, -1.5, 0.0]);
+          mat4.scale(TopMatrix("model"), [5.0, 5.0, 5.0]);
+          setTexture(null, null, null, true, false);
+          PushMatrix("model");
+            shader_inuse = obj_shader;
+            shaderProgram = shaderPrograms[shader_inuse];
+            gl.useProgram(shaderProgram);
+            drawObjModel(models.imac, obj_shader);
+          PopMatrix("model");
+          shader_inuse = normal_shader;
+          shaderProgram = shaderPrograms[shader_inuse];
+          gl.useProgram(shaderProgram);
+          front_material = {
+            ambient:[0.0, 0.0, 0.0, 1.0],//描述物體對環境光的反射程度
+            diffuse:[0.0, 0.0, 0.0, 1.0],//描述物體的漫反射
+            specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射
+            emission:[1.0, 1.0, 1.0, 1.0],//描述物體的自發光
+            shiness:20
+          };
+          UpdateMaterial(front_material);
+          drawScreen(normal_shader, obj_shader);
+        PopMatrix("model");
+      }
+
+      setTexture(kotou_billboard, null, null, true, false);
+      front_material = {
+        ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度，螢幕原來為黑色的
+        diffuse:[1.0, 1.0, 1.0, 1.0],//描述物體的漫反射，螢幕原來為黑色的
+        specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射，有螢幕效果
+        emission:[1.5, 1.5, 1.5, 1.0],//描述物體的自發光，有自發光才會看到螢幕上的畫面
+        shiness:20
+      };
+      UpdateMaterial(front_material);
+
+      //mat4.rotate(TopMatrix("model"), degToRad(30), [1, 0, 0]);
+      setTexture( woodenTexture, null, null, true, false);//shadowmapTexture.texture  woodenTexture
+      shader_inuse = normal_shader;
+      shaderProgram = shaderPrograms[shader_inuse];
+      gl.useProgram(shaderProgram);
+	    drawFloor(normal_shader, obj_shader);
+
+      PushMatrix("model");
+        for(var i=0; i < ducksArray.length; ++i){
+          if(document.getElementById("uLight1").checked && i==0){
+            front_material = {
+              ambient:[30, 0.0, 0.0, 1.0],//描述物體對環境光的反射程度，螢幕原來為黑色的
+              diffuse:[1.0, 0.0, 0.0, 1.0],//描述物體的漫反射，螢幕原來為黑色的
+              specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射，有螢幕效果
+              emission:[30, 0.0, 0.0, 1.0],//描述物體的自發光，有自發光才會看到螢幕上的畫面
+              shiness:20
+            };
+          }else{
+            front_material = {
+              ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度，螢幕原來為黑色的
+              diffuse:[1.0, 1.0, 1.0, 1.0],//描述物體的漫反射，螢幕原來為黑色的
+              specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射，有螢幕效果
+              emission:[0.0, 0.0, 0.0, 1.0],//描述物體的自發光，有自發光才會看到螢幕上的畫面
+              shiness:20
+            };
+          }
+          UpdateMaterial(front_material);
+          ducksArray[i].draw(normal_shader, obj_shader);
+        }
+      PopMatrix("model");
+
+    }
+
+    function drawScreen(normal_shader, obj_shader){
+      shader_inuse = normal_shader;//objShader
+      gl.useProgram(shaderPrograms[shader_inuse]);
+      shaderProgram = shaderPrograms[shader_inuse];
+
+      UpdateMaterial(front_material);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, screenVertexPositionBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, screenVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexColorBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, mirrorVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexNormalBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, mirrorVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+
+      setTexture( crateTexture, null, null, true, false);
+
+      gl.activeTexture(gl.TEXTURE0);
+     	  var uRenderTT = document.getElementById("uRenderTT").checked;
+     	  screenTexture.muted = uRenderTT;
+     	  if(!uRenderTT){
+     		  if (copyWEBM_texture) BindWEBMtexture(gl, tempTexture, screenTexture);
+     		  else gl.bindTexture(gl.TEXTURE_2D, tempTexture);
+     	  }else{
+     		  gl.bindTexture(gl.TEXTURE_2D, rttTexture);
+     	  }
+          gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mirrorVertexIndexBuffer);
+      setMatrixUniforms();
+      gl.drawElements(gl.TRIANGLES, mirrorVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+    }
+
+    function drawMirror(val, hasTexture, normal_shader, obj_shader){
+      shader_inuse = normal_shader;//objShader
+      gl.useProgram(shaderPrograms[shader_inuse]);
+      shaderProgram = shaderPrograms[shader_inuse];
+
+      UpdateMaterial(front_material);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexPositionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(mirror(val)), gl.STATIC_DRAW);
+      gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, mirrorVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexColorBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, mirrorVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mirrorVertexNormalBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, mirrorVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      setTexture( crateTexture, null, null, hasTexture, false);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mirrorVertexIndexBuffer);
+      setMatrixUniforms();
+      gl.drawElements(gl.TRIANGLES, mirrorVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+    }
+
+
+    var laptopScreenAspectRatio = 1.66;
+    function drawSceneOnMacScreen(normal_shader, obj_shader) {
+
+      gl.viewport(0, 0, rttFramebuffer.width, rttFramebuffer.height);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      PushMatrix("projection");
+        mat4.identity(TopMatrix("projection"));
+        var aspect = laptopScreenAspectRatio;
+        var fovy = 45.0;
+        var zNear = 0.1;
+        var zFar = 500.0;
+        mat4.perspective(fovy, aspect, zNear, zFar, TopMatrix("projection"));
+
+          shader_inuse = normal_shader;//objShader
+          gl.useProgram(shaderPrograms[shader_inuse]);
+          shaderProgram = shaderPrograms[shader_inuse];
+
+
+          PushMatrix("view");
+            mat4.identity(TopMatrix("view"));
+            //mat4.lookAt([0.0, 0.0, -10.0], [0.0, 0.0, -11.0], [0.0, 1.0, 0.0], TopMatrix("view"));
+            var lookAtMatrix = mat4.create(TopMatrix("view"));
+
+                     var duck_matrix = mat4.create();
+                     mat4.identity(duck_matrix);
+                     mat4.rotate(duck_matrix, degToRad(rCube*.2), [0, 1, 0]);
+                     mat4.translate(duck_matrix, [10.0, 0.0, 0.0]);
+
+                     mat4.rotate(duck_matrix, degToRad(90), [0, 1, 0]);
+                     //mat4.translate(duck_matrix, [0.0, 1.0, 1.0]);
+                     var lookat_chicken = vec3.create();
+
+                     mat4.multiplyVec3(duck_matrix, [0.0, 0.0, 0.0], lookat_chicken);
+
+                      mat4.lookAt([0.0, 8.0, -50.0], [0.0, 8.0, 2.0], [0.0, 1.0, 0.0], lookAtMatrix);
+                      mat4.multiply(TopMatrix("view"), lookAtMatrix , TopMatrix("view"));
+
+            PushMatrix("model");
+              /*mat4.identity(TopMatrix("model"));
+
+              //mat4.translate(TopMatrix("model"), [0.0, 2.0, -40.0]);
+
+              light_sources[0] = {
+                direction: [1.0, 0.0, 0.0, 0.0],
+                position: [0.0, 0.0, 0.0, 0.0],
+
+                ambient: [0.3, 0.3, 0.3, 1.0],
+                diffuse: [0.7, 0.7, 0.7, 1.0],
+                specular: [0.8, 0.8, 0.8, 1.0],//defult no specular
+
+                spotCutOff:  degToRad(180.0),
+                spotExponent: 0.0,
+                constantAttenuation: 1.0,
+                linearAttenuation: 0.0,
+                quadraticAttenuation: 0.0,
+                enable: true
+              };
+
+
+              front_material = {
+                ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度，螢幕原來為黑色的
+                diffuse:[1.0, 1.0, 1.0, 1.0],//描述物體的漫反射，螢幕原來為黑色的
+                specular:[0.5, 0.5, 0.5, 1.0],//描述物體的鏡面反射，有螢幕效果
+                emission:[1.5, 1.5, 1.5, 1.0],//描述物體的自發光，有自發光才會看到螢幕上的畫面
+                shiness:20
+              };
+
+              for(var i=0; i<shaderPrograms.length; ++i){
+                shader_inuse = i;
+                shaderProgram = shaderPrograms[shader_inuse];
+                gl.useProgram(shaderProgram);
+                UpdateLighting();
+                UpdateMaterial(front_material);
+                UpdateFog(foggy_effect);
+                gl.uniform1b(shaderProgram.useLightingUniform, true);
+              }
+
+              setTexture( woodenTexture, null, null, true, false);
+              shader_inuse = defaultShader;
+              shaderProgram = shaderPrograms[shader_inuse];
+              gl.useProgram(shaderProgram);
+        	    drawFloor();
+
+              PopMatrix("model");*/
+
+              mat4.identity(TopMatrix("model"));
+      gl.uniform1b(shaderProgram.enableTextureUniform, false);
+      gl.uniform1b(shaderProgram.transmissionUniform, false);
+      gl.activeTexture(gl.TEXTURE0);    //載入0號畫框
+      gl.bindTexture(gl.TEXTURE_2D, woodenTexture);//shadowmapTexture.texture  golddenTexture
+      gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+      gl.activeTexture(gl.TEXTURE1);    //載入1號畫框
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, environmentalTexture);
+
+      gl.activeTexture(gl.TEXTURE2);    //載入2號畫框
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
+      gl.uniform1i(shaderProgram.samplerduckUniform, 2);
+
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, shadowmapTexture.texture);
+      gl.uniform1i(shaderProgram.shadowSamplerUniform, 3);
+
+      gl.uniform1i(shaderProgram.samplerCubeUniform, 1);
+      gl.uniform1b(shaderProgram.enableTextureUniform, true);
+
+        gl.uniform1f(shaderProgram.envFactorUniform, 1.7);
+	     drawFloor(normal_shader, obj_shader);
+
+       PushMatrix("model");
+
+            //mat4.set(TopMatrix("view"), TopMatrix("model"));
+
+             gl.activeTexture(gl.TEXTURE0);    //載入的0號畫框
+             gl.bindTexture(gl.TEXTURE_2D, skyTexture);
+             gl.uniform1i(shaderProgram.samplerUniform, 0);
+             gl.uniform1b(shaderProgram.enableTextureUniform, true);
+
+             var inv_view = mat4.create();
+
+              mat4.inverse(TopMatrix("view"), inv_view);
+            mat4.set(inv_view, TopMatrix("model"));
+            mat4.scale(TopMatrix("model"), [
+               aspect * zFar * Math.tan(degToRad(fovy) * 0.5),
+               zFar * Math.tan(degToRad(fovy) * 0.5),
+           1.0]);
+             mat4.translate(TopMatrix("model"), [0.0, 0.0, -zFar + 1]);
+             gl.uniformMatrix4fv(shaderProgram.inverseViewMatrixUniform, false, inv_view);
+       			//mat4.rotate(TopMatrix("model"), degToRad(180), [0, 1, 0]);
+       			//mat4.scale(TopMatrix("model"), [15.0,15.0,0.1]);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+      			gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexTextureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+       			gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+
+       			setMatrixUniforms();
+            gl.uniform1f(shaderProgram.envFactorUniform, 1.0);
+            gl.uniform1b(shaderProgram.transmissionUniform, true);
+       			gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+            gl.uniform1b(shaderProgram.transmissionUniform, false);
+
+       PopMatrix("model");
+
+
+       gl.uniform1b(shaderProgram.enableTextureUniform, false);
+       gl.bindTexture(gl.TEXTURE_2D, null);
+
+      PushMatrix("model");
+		  mat4.rotate(TopMatrix("model"), degToRad(rCube*.2), [0, 1, 0]);
+		  mat4.translate(TopMatrix("model"), [10.0, 0.0, 0.0]);
+
+		  mat4.rotate(TopMatrix("model"), degToRad(90), [0, 1, 0]);
+      gl.uniform1f(shaderProgram.envFactorUniform, 0.6);
+		  drawMalformedDuck(normal_shader, obj_shader);
+
+      PopMatrix("model");
+
+            PopMatrix("model");
+
+          PopMatrix("view");
+          gl.bindTexture(gl.TEXTURE_2D, rttTexture);
+          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.bindTexture(gl.TEXTURE_2D, null);
+      PopMatrix("projection");
+    }
+
+    function display1() {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, rttFramebuffer);
+      gl.clearColor(0.0, 0.0, 0.0, 1.0);
+
+      drawSceneOnMacScreen(defaultShader, objShader);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.clearColor(0.5, 0.5, 0.5, 1.0);
+
+      gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+
+    }
+    function drawNormalScene(normal_shader, obj_shader) {
+
+        var mirror_size = 10;
+
+          //Camera control
+          mat4.rotate(TopMatrix("view"), degToRad(viewHead), [0.0, 1.0, 0.0]);
+          mat4.rotate(TopMatrix("view"), degToRad(viewRoll), [0.0, 0.0, 1.0]);
+          mat4.rotate(TopMatrix("view"), degToRad(viewEpitch), [1.0, 0.0, 0.0]);
+
+          mat4.translate(TopMatrix("view"), [0.0, viewUppos, 0.0]);
+          mat4.translate(TopMatrix("view"), [-viewRight, 0.0, 0.0]);
+          mat4.translate(TopMatrix("view"), [0.0, 0.0, -viewZoom]);
+
+          mat4.identity(TopMatrix("model"));
+          mat4.translate(TopMatrix("model"), [0, -10, 0]);
+
+          gl.enable(gl.STENCIL_TEST);
+            PushMatrix("model");
+              mat4.translate(TopMatrix("model"), [0, 10, -50]);
+              //建立鏡子的方式是直接移動到鏡子內的坐標系畫一次反射的場景，
+              //回到世界坐標系再在畫一次一班場景
+              //但這樣會因此在畫鏡子內物品時只能讓他畫在鏡子的範圍內
+              //因此這時需要模具緩衝器(Stencil Buffer)，其功能有如遮罩
+              //先將之前模具(Stencil)中的遮罩值清零
+              gl.clearStencil(0x00);
+              gl.clear(gl.STENCIL_BUFFER_BIT);
+              //現在我們要建構模具(Stencil)中的遮罩，因此先用ALWAYS，讓他都會作用
+              gl.stencilFunc(gl.ALWAYS, 0x1, 0x1 );
+              gl.stencilOp(gl.REPLACE, gl.REPLACE, gl.REPLACE);
+              //開啟Stencil Buffer中每一個位元的寫入
+              gl.stencilMask(0xff);
+              //關閉depth Buffer的寫入
+              gl.depthMask(false);
+              //關閉color Buffer每個Channel的寫入
+              gl.colorMask(false, false, false, false);
+              //做完以上設定，使得所有繪圖動作僅會作用於Stencil Buffer
+
+              //建立和鏡子形狀相同的遮罩
+              drawMirror(mirror_size, null, normal_shader, obj_shader);
+
+              //關閉Stencil Buffer中每一個位元的寫入
+              gl.stencilMask(0x00);
+              //開啟depth Buffer以及olor Buffer的寫入
+              gl.depthMask(true);
+              gl.colorMask(true, true, true, true);
+              //gl.KEEP使得之後的操作會讓stencil Buffer的值原封不動地保持
+              gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+            PopMatrix("model");
+
+            gl.clear( gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT );
+            PushMatrix("model");
+              //建立鏡面反射坐標系 (Reflected space)
+              mat4.translate(TopMatrix("model"), [0, 0, -50]);
+              mat4.scale(TopMatrix("model"), [1.0, 1.0, -1.0]);
+              mat4.translate(TopMatrix("model"), [0, 0, +50]);
+              //只在剛才在stencil Buffer畫出的 "和鏡子一樣形狀" 的位置做畫
+              gl.stencilFunc(gl.EQUAL, 0x1, 0x1);
+
+              mat4.set(TopMatrix("model"),TopMatrix("lightmodel"));
+              //建立鏡中光源
+              mat4.translate(TopMatrix("lightmodel"), [0, 0, -50]);
+              //在鏡面反射坐標系畫場景及物件
+              PushMatrix("projection");
+                mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 500.0, TopMatrix("projection"));
+                drawScene(document.getElementById("uFogOnMirror").checked, normal_shader, obj_shader);
+              PopMatrix("projection");
+              mat4.identity(TopMatrix("lightmodel"));
+              //離開鏡面反射坐標系 (Reflected space)
+            PopMatrix("model");
+            //回到世界坐標系 (World space)
+            //剛才化的深度不算數，實際上只有一片鏡子，先全部清掉
+            gl.clear( gl.DEPTH_BUFFER_BIT );
+            //關閉模具(Stencil)測試
+          gl.disable(gl.STENCIL_TEST);
+
+          //移到鏡子的位置，畫鏡子
+          PushMatrix("model");
+            //關閉Color Buffer (只畫Depth Buffer)
+            gl.colorMask(false, false, false, false);
+            mat4.translate(TopMatrix("model"), [0, 10, -50]);
+            //讓鏡子的位置已有物體，以便進行深度測試
+            drawMirror(mirror_size, null, normal_shader, obj_shader);
+            //開啟Color Buffer
+            gl.colorMask(true, true, true, true);
+            foggy_effect = {
+              density:0.02,
+              color:[0.5, 0.5, 0.5, 1.0],
+            type:fogStructMembers.EnumType.none,
+              depthType:fogStructMembers.EnumDepthType.range_based
+            };
+            UpdateFog(foggy_effect);
+            //畫鏡子的材質，但因為是透明的，因此啟用blending (畫玻璃)
+            gl.enable(gl.BLEND);
+              gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+              var r_factor = 0.5;
+              gl.uniform1b(shaderProgram.EnableTextureUniform, false);
+              gl.uniform1f(shaderProgram.MirrorBlendUniform, r_factor);
+
+              //不能與鏡子重複位置 (因為Depth Buffer以記錄該位置有鏡子，會畫不上去)
+              mat4.translate(TopMatrix("model"), [0, 0, 0.1]);
+              //設定鏡子玻璃面的材質
+              front_material = {
+                ambient:[
+                  (1.0 * r_factor),
+                  (1.0 * r_factor),
+                  (1.0 * r_factor),
+                1.0],
+                diffuse:[
+                  (1.0 * r_factor),
+                  (1.0 * r_factor),
+                  (1.0 * r_factor),
+                1.0],
+                specular:[0.9, 0.9, 0.9, 1.0],
+                emission:[0.0, 0.0, 0.0, 1.0],
+                shiness:255
+              };
+              //繪製鏡子玻璃面
+              drawMirror(mirror_size, null, normal_shader, obj_shader);
+              gl.uniform1f(shaderProgram.MirrorBlendUniform, 1.0);
+              gl.uniform1b(shaderProgram.EnableTextureUniform, true);
+              //畫完玻璃
+            gl.disable(gl.BLEND);
+            //鏡子的背面是木頭
+            front_material = {
+              ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度
+              diffuse:[0.5, 0.5, 0.5, 1.0],//描述物體的曼反射
+              specular:[0.9, 0.9, 0.9, 1.0],//描述物體的鏡面反射
+              emission:[0.0, 0.0, 0.0, 1.0],//描述物體的自發光
+              shiness:255
+            };
+            //畫在相對鏡子的背面
+            mat4.translate(TopMatrix("model"), [0, 0, -0.2]);
+            drawMirror(mirror_size,true,normal_shader, obj_shader);
+            //畫完鏡子
+          PopMatrix("model");
+          //畫場景，除了鏡子外的其他物品。
+          drawScene(document.getElementById("uFog").checked, normal_shader, obj_shader);
+
+    }
+function drawShadowMap(normal_shader, obj_shader) {
+
+    var mirror_size = 10;
+
+      //移到鏡子的位置，畫鏡子
+      PushMatrix("model");
+        //關閉Color Buffer (只畫Depth Buffer)
+        gl.colorMask(false, false, false, false);
+        mat4.translate(TopMatrix("model"), [0, 10, -50]);
+        //讓鏡子的位置已有物體，以便進行深度測試
+        drawMirror(mirror_size, null, normal_shader, obj_shader);
+        //開啟Color Buffer
+        gl.colorMask(true, true, true, true);
+        foggy_effect = {
+          density:0.02,
+          color:[0.5, 0.5, 0.5, 1.0],
+        type:fogStructMembers.EnumType.none,
+          depthType:fogStructMembers.EnumDepthType.range_based
+        };
+        UpdateFog(foggy_effect);
+        //畫鏡子的材質，但因為是透明的，因此啟用blending (畫玻璃)
+        //gl.enable(gl.BLEND);
+          //gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+          var r_factor = 0.5;
+          gl.uniform1b(shaderProgram.EnableTextureUniform, false);
+          gl.uniform1f(shaderProgram.MirrorBlendUniform, r_factor);
+
+          //不能與鏡子重複位置 (因為Depth Buffer以記錄該位置有鏡子，會畫不上去)
+          mat4.translate(TopMatrix("model"), [0, 0, 0.1]);
+          //設定鏡子玻璃面的材質
+          front_material = {
+            ambient:[
+              (1.0 * r_factor),
+              (1.0 * r_factor),
+              (1.0 * r_factor),
+            1.0],
+            diffuse:[
+              (1.0 * r_factor),
+              (1.0 * r_factor),
+              (1.0 * r_factor),
+            1.0],
+            specular:[0.9, 0.9, 0.9, 1.0],
+            emission:[0.0, 0.0, 0.0, 1.0],
+            shiness:255
+          };
+          //繪製鏡子玻璃面
+          drawMirror(mirror_size, null, normal_shader, obj_shader);
+          gl.uniform1f(shaderProgram.MirrorBlendUniform, 1.0);
+          gl.uniform1b(shaderProgram.EnableTextureUniform, true);
+          //畫完玻璃
+        //gl.disable(gl.BLEND);
+        //鏡子的背面是木頭
+        front_material = {
+          ambient:[1.0, 1.0, 1.0, 1.0],//描述物體對環境光的反射程度
+          diffuse:[0.5, 0.5, 0.5, 1.0],//描述物體的曼反射
+          specular:[0.9, 0.9, 0.9, 1.0],//描述物體的鏡面反射
+          emission:[0.0, 0.0, 0.0, 1.0],//描述物體的自發光
+          shiness:255
+        };
+        //畫在相對鏡子的背面
+        mat4.translate(TopMatrix("model"), [0, 0, -0.2]);
+        drawMirror(mirror_size,true, normal_shader, obj_shader);
+        //畫完鏡子
+      PopMatrix("model");
+      //畫場景，除了鏡子外的其他物品。
+      drawScene(document.getElementById("uFog").checked, normal_shader, obj_shader);
+
+
+}
+
+        function display() {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, rttFramebuffer);
+          gl.clearColor(0.0, 0.0, 0.0, 1.0);
+
+          drawSceneOnMacScreen(defaultShader, objShader);
+
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, shadowmapTexture);
+          gl.clearColor(0.5, 0.5, 0.5, 1.0);
+
+          gl.viewport(0, 0, shadowmapTexture.width, shadowmapTexture.height);
+          gl.clearColor(0.0, 0.0, 0.0, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          PushMatrix("projection");
+            mat4.identity(TopMatrix("projection"));
+              // setting up projection matrix with perspective
+             var aspect = gl.viewportWidth / gl.viewportHeight;
+             var fovy = 45.0;
+             var zNear = 1.0;
+             var zFar = 800.0;
+            mat4.perspective(fovy, aspect, zNear, zFar, TopMatrix("projection"));
+
+            PushMatrix("view");
+              //Camera control
+              mat4.rotate(TopMatrix("view"), degToRad(viewHead), [0.0, 1.0, 0.0]);
+              mat4.rotate(TopMatrix("view"), degToRad(viewRoll), [0.0, 0.0, 1.0]);
+              mat4.rotate(TopMatrix("view"), degToRad(viewEpitch), [1.0, 0.0, 0.0]);
+
+              mat4.translate(TopMatrix("view"), [0.0, viewUppos, 0.0]);
+              mat4.translate(TopMatrix("view"), [-viewRight, 0.0, 0.0]);
+              mat4.translate(TopMatrix("view"), [0.0, 0.0, -viewZoom]);
+
+              mat4.identity(TopMatrix("model"));
+              mat4.translate(TopMatrix("model"), [0, -10, 0]);
+
+              PushMatrix("projection");PushMatrix("view");PushMatrix("model");
+
+              var viewProjMatrixFromLight = mat4.create();
+              var far_light = 50;
+              mat4.identity( viewProjMatrixFromLight);
+              mat4.ortho(-far_light,far_light,-far_light,far_light,-far_light,far_light * 2,TopMatrix("projection"));
+
+              var focusVec = vec3.create();
+              var focusMat = mat4.create(TopMatrix("identity"));
+              mat4.multiplyVec3(focusMat, [0,0,-1], focusVec);
+
+              var dir = vec3.create();
+              vec3.normalize([
+                -light_sources[0].direction[0],
+                -light_sources[0].direction[1],
+                -light_sources[0].direction[2]
+              ], dir)
+
+              mat4.lookAt(
+                [dir[0]*far_light, dir[1]*far_light, dir[2]*far_light],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0], TopMatrix("view"));
+
+                mat4.multiply(TopMatrix("projection"), TopMatrix("view"), viewProjMatrixFromLight);
+
+                mat4.identity(TopMatrix("texture"));
+                // Draw the Scene
+                mat4.identity(TopMatrix("model"));
+
+                for(var i=0; i<shaderPrograms.length; ++i){
+                  shader_inuse = i;
+                  shaderProgram = shaderPrograms[shader_inuse];
+                  gl.useProgram(shaderProgram);
+                  UpdateLighting();
+                  UpdateMaterial(front_material);
+                  UpdateFog(foggy_effect);
+                }
+
+                drawShadowMap(shadowshader, shadowshader);//defaultShader, objShader shadowshader
+              PopMatrix("model");PopMatrix("view");PopMatrix("projection");
+
+              gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+              gl.clearColor(0.5, 0.5, 0.5, 1.0);
+
+              gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+              gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+              for(var i=0; i<shaderPrograms.length; ++i){
+                shader_inuse = i;
+                shaderProgram = shaderPrograms[shader_inuse];
+                gl.useProgram(shaderProgram);
+                UpdateLighting();
+                UpdateMaterial(front_material);
+                UpdateFog(foggy_effect);
+                gl.uniformMatrix4fv(shaderProgram.ViewProjectionMatrixFromLightUniform, false, viewProjMatrixFromLight);
+              }
+
+              drawNormalScene(defaultShader, objShader);
+            PopMatrix("view");
+          PopMatrix("projection");
+        //drawShadowMap(defaultShader, objShader);
+        }
+
+
+    var lastTime = 0;
+
+    function animate() {
+      var timeNow = new Date().getTime();
+      if (lastTime != 0) {
+        var elapsed = timeNow - lastTime;
+
+        rPyramid += (90 * elapsed) / 1000.0;
+        rCube -= (75 * elapsed) / 1000.0;
+
+        for(var i=0; i < ducksArray.length; ++i){
+          ducksArray[i].move(elapsed / 1000.0);
+        }
+
+      }
+      lastTime = timeNow;
+    }
+
+
+    function tick() {
+      requestAnimFrame(tick);
+      handleKeys();
+      display();
+      animate();
+    }
+
+    function reshape(gl) {
+  		gl.canvas.width = window.innerWidth;
+  		gl.canvas.height = window.innerHeight * 0.8;
+  	  gl.viewportWidth = gl.canvas.clientWidth;
+  	  gl.viewportHeight = gl.canvas.clientHeight;
+      gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+      mat4.identity(TopMatrix("projection"));
+      mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 500.0, TopMatrix("projection"));
+      //Define the current eye position and the eye-coordinate system
+      mat4.identity(TopMatrix("view"));
+
+      //Define Viewing Matrix
+      mat4.lookAt([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], TopMatrix("view"));
+  	}
+
+    function webGLStart() {
+
+      let p = OBJ.downloadModels([
+        {
+              obj: "model/Nanachi.obj",
+              mtl: true
+        },{
+          obj: "imac/imac.obj",
+          mtl: true
+        }
+      ]);
+      //AJAX
+      p.then(function(get_data){
+        console.log(get_data);
+
+        meshes = get_data;
+
+        var canvas = document.getElementById("myCanvas");
+        initGL(canvas);
+        initShaders();
+        initBuffers();
+        initLighting();
+        initMaterial();
+        initTexture();
+        initWorldObj(defaultShader, objShader);
+        initFog();
+        gl.clearColor(0.5, 0.5, 0.5, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+        reshape(gl);
+        window.addEventListener('resize', function(){reshape(gl);});
+        document.onkeydown = handleKeyDown;
+        document.onkeyup = handleKeyUp;
+        tick();
+      });
+
+    }
+
+  </script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+    <canvas id="myCanvas" style="border: none;" width="500" height="500"></canvas>
+    <br>
+    <div style="margin-left: 80px;">
+      <label class="container"> Use Render-to-Texture
+        <input type="checkbox" id="uRenderTT"/>
+        <span class="checkmark"></span>
+      </label>
+      <label class="container"> Use fog on mirror
+        <input type="checkbox" id="uFogOnMirror" checked="checked"/>
+        <span class="checkmark"></span>
+      </label>
+      <label class="container"> Use fog outside the mirror
+        <input type="checkbox" id="uFog" checked="checked"/>
+        <span class="checkmark"></span>
+      </label>
+      <label class="container"> Use light 0
+        <input type="checkbox" id="uLight0" checked="checked"/>
+        <span class="checkmark"></span>
+      </label>
+      <label class="container"> Use light on duck
+        <input type="checkbox" id="uLight1" checked="checked"/>
+        <span class="checkmark"></span>
+      </label>
+      <label class="container"> Let the Mac rotate
+        <input type="checkbox" id="uMacRotate" checked="checked"/>
+        <span class="checkmark"></span>
+      </label>
+      <label class="container"> Open the obj model
+        <input type="checkbox" id="openObj" checked="checked"/>
+        <span class="checkmark"></span>
+      </label>
+    </div>
+</body>
+
+</html>
